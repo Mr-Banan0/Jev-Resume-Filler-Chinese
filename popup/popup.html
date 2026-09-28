@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jev Resume Filler</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="header">
+    <h1 class="title">Jev Resume Filler</h1>
+        <span class="version">v0.5.0</span>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="basic" role="tab">基本</button>
+    <button class="tab" data-tab="edu" role="tab">教育</button>
+    <button class="tab" data-tab="work" role="tab">工作</button>
+    <button class="tab" data-tab="skills" role="tab">技能</button>
+    <button class="tab" data-tab="settings" role="tab">设置</button>
+  </nav>
+
+  <main class="panes">
+    <!-- 基本信息 pane -->
+    <section class="pane active" data-pane="basic">
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">姓名</span>
+          <input type="text" data-bind="basics.name" placeholder="张三" />
+        </label>
+        <label class="field">
+          <span class="field-label">性别</span>
+          <select data-bind="basics.gender">
+            <option value="">未填</option>
+            <option value="男">男</option>
+            <option value="女">女</option>
+          </select>
+        </label>
+      </div>
+      <label class="field">
+        <span class="field-label">简历照片（JPG/JPEG/PNG，保存在本机插件中）</span>
+        <span class="file-picker">
+          <label class="btn ghost file-label" for="resume-photo">选择或更换照片</label>
+          <input type="file" id="resume-photo" accept="image/jpeg,image/png" hidden />
+          <span class="status-value warn" id="resume-photo-status" aria-live="polite">尚未保存照片</span>
+          <span class="status-value" id="life-photo-status" aria-live="polite"></span>
+        </span>
+      </label>
+      <label class="field">
+        <span class="field-label">简历附件（PDF/Word 等，保存在本机插件中）</span>
+        <span class="file-picker">
+          <label class="btn ghost file-label" for="resume-attachment">选择或更换简历</label>
+          <input type="file" id="resume-attachment" accept=".pdf,.doc,.docx,.ppt,.pptx,.wps,.jpg,.jpeg,.png,.txt" hidden />
+          <span class="status-value warn" id="resume-attachment-status" aria-live="polite">尚未保存简历附件</span>
+        </span>
+      </label>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">出生日期</span>
+          <input type="text" data-bind="basics.birthDate" placeholder="1998-05" />
+        </label>
+        <label class="field">
+          <span class="field-label">电话</span>
+          <input type="text" data-bind="basics.phone" placeholder="13800138000" />
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">邮箱</span>
+          <input type="text" data-bind="basics.email" placeholder="you@example.com" />
+        </label>
+        <label class="field">
+          <span class="field-label">居住地详细地址</span>
+          <input type="text" data-bind="basics.location.address" placeholder="街道、门牌号（可选）" />
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">籍贯</span>
+          <input type="text" data-bind="basics.nativePlace" placeholder="山东济南" />
+        </label>
+        <label class="field">
+          <span class="field-label">婚姻状态</span>
+          <select data-bind="basics.maritalStatus">
+            <option value="">未填</option>
+            <option value="未婚">未婚</option>
+            <option value="已婚">已婚</option>
+            <option value="已婚已育">已婚已育</option>
+            <option value="离异">离异</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">民族</span>
+          <input type="text" data-bind="basics.ethnicity" placeholder="汉族" />
+        </label>
+        <label class="field">
+          <span class="field-label">国籍/地区</span>
+          <input type="text" data-bind="basics.nationality" placeholder="中国" />
+        </label>
+      </div>
+      <hr class="divider" />
+      <h3 class="section-title">省市区（三级地址选择器）</h3>
+      <div class="form-row">
+        <label class="field"><span class="field-label">籍贯省</span><input type="text" data-bind="basics.nativePlaceDetail.province" placeholder="广东省" /></label>
+        <label class="field"><span class="field-label">籍贯市</span><input type="text" data-bind="basics.nativePlaceDetail.city" placeholder="河源市" /></label>
+      </div>
+      <div class="form-row">
+        <label class="field"><span class="field-label">籍贯区县</span><input type="text" data-bind="basics.nativePlaceDetail.district" placeholder="和平县" /></label>
+        <label class="field"><span class="field-label">户口省</span><input type="text" data-bind="basics.hukouDetail.province" placeholder="广东省" /></label>
+      </div>
+      <div class="form-row">
+        <label class="field"><span class="field-label">户口市</span><input type="text" data-bind="basics.hukouDetail.city" placeholder="广州市" /></label>
+        <label class="field"><span class="field-label">户口区县</span><input type="text" data-bind="basics.hukouDetail.district" placeholder="黄埔区" /></label>
+      </div>
+      <div class="form-row">
+        <label class="field"><span class="field-label">现居省</span><input type="text" data-bind="basics.location.region.province" placeholder="广东省" /></label>
+        <label class="field"><span class="field-label">现居市</span><input type="text" data-bind="basics.location.region.city" placeholder="深圳市" /></label>
+      </div>
+      <div class="form-row">
+        <label class="field"><span class="field-label">现居区县</span><input type="text" data-bind="basics.location.region.district" placeholder="宝安区" /></label>
+        <label class="field"><span class="field-label">现居城市（普通文本控件）</span><input type="text" data-bind="basics.location.city" placeholder="深圳" /></label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">户口所在地</span>
+          <input type="text" data-bind="basics.hukou" placeholder="广东广州市" />
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">政治面貌</span>
+          <select data-bind="basics.politicalStatus">
+            <option value="">未填</option>
+            <option value="群众">群众</option>
+            <option value="共青团员">共青团员</option>
+            <option value="中共预备党员">中共预备党员</option>
+            <option value="中共党员">中共党员</option>
+            <option value="民主党派">民主党派</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">最高学历</span>
+          <select data-bind="basics.highestDegree">
+            <option value="">未填</option>
+            <option value="大专">大专</option>
+            <option value="本科">本科</option>
+            <option value="硕士">硕士</option>
+            <option value="博士">博士</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">证件类型</span>
+          <select data-bind="basics.idType">
+            <option value="">未填</option>
+            <option value="身份证">身份证</option>
+            <option value="护照">护照</option>
+            <option value="港澳通行证">港澳通行证</option>
+            <option value="台胞证">台胞证</option>
+            <option value="其他">其他</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">证件号码</span>
+          <input type="text" data-bind="basics.idNumber" placeholder="仅本地使用，不上传" />
+        </label>
+      </div>
+      <label class="field">
+        <span class="field-label">求职意向</span>
+        <input type="text" data-bind="basics.label" placeholder="前端工程师" />
+      </label>
+      <label class="field">
+        <span class="field-label">自我介绍</span>
+        <textarea data-bind="basics.summary" rows="3" placeholder="一句话总结"></textarea>
+      </label>
+      <hr class="divider" />
+      <h3 class="section-title">期望信息（可选）</h3>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">期望薪资</span>
+          <input type="text" data-bind="expected.salary" placeholder="30-40万 / 面议" />
+        </label>
+        <label class="field">
+          <span class="field-label">期望城市</span>
+          <input type="text" data-bind="expected.city" placeholder="深圳" />
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">到岗时间</span>
+          <select data-bind="expected.startDate">
+            <option value="">未填</option>
+            <option value="随时">随时</option>
+            <option value="一周内">一周内</option>
+            <option value="两周内">两周内</option>
+            <option value="一个月内">一个月内</option>
+            <option value="三个月内">三个月内</option>
+            <option value="面议">面议</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">是否接受异地</span>
+          <select data-bind="expected.acceptRelocation">
+            <option value="">未填</option>
+            <option value="是">是</option>
+            <option value="否">否</option>
+            <option value="可商量">可商量</option>
+          </select>
+        </label>
+      </div>
+    </section>
+
+    <!-- 教育 pane -->
+    <section class="pane" data-pane="edu">
+      <div class="list" id="edu-list"></div>
+      <button class="btn ghost add-btn" id="edu-add">+ 添加一段教育</button>
+    </section>
+
+    <!-- 工作 pane -->
+    <section class="pane" data-pane="work">
+      <h3 class="section-title">实习经历</h3>
+      <div class="list" id="internship-list"></div>
+      <button class="btn ghost add-btn" id="internship-add">+ 添加一段实习</button>
+      <hr class="divider" />
+      <h3 class="section-title">工作经历</h3>
+      <div class="list" id="work-list"></div>
+      <button class="btn ghost add-btn" id="work-add">+ 添加一段工作</button>
+    </section>
+
+    <!-- 技能 pane -->
+    <section class="pane" data-pane="skills">
+      <h3 class="section-title">论文著作</h3>
+      <div class="list" id="publication-list"></div>
+      <button class="btn ghost add-btn" id="publication-add">+ 添加一篇论文</button>
+      <hr class="divider" />
+      <label class="field">
+        <span class="field-label">技能（每行一条：技能|熟练度，熟练度可选）</span>
+        <textarea data-bind="skillsKeywords" rows="4" placeholder="JavaScript|熟练&#10;TypeScript|熟悉&#10;React"></textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">证书（每行一条：名称|颁发机构|日期）</span>
+        <textarea data-bind="certificatesText" rows="3" placeholder="CET-6|教育部|2020-06"></textarea>
+      </label>
+      <label class="field">
+        <span class="field-label">兴趣（逗号分隔）</span>
+        <input type="text" data-bind="interestsText" placeholder="阅读, 跑步, 摄影" />
+      </label>
+    </section>
+
+    <!-- 设置 pane -->
+    <section class="pane" data-pane="settings">
+      <label class="field">
+        <span class="field-label">TypeSafe Jev API Key</span>
+        <input type="password" id="jev-api-key" placeholder="apikey_xxx" />
+      </label>
+      <button class="btn" id="btn-save-key">保存 Key</button>
+
+      <hr class="divider" />
+
+      <div class="json-actions">
+        <button class="btn ghost" id="btn-export">导出 JSON</button>
+        <label class="btn ghost file-label">
+          导入 JSON
+          <input type="file" id="import-file" accept=".json,application/json" hidden />
+        </label>
+      </div>
+      <details class="json-preview">
+        <summary>查看当前 JSON</summary>
+        <pre id="json-preview" class="json-code"></pre>
+      </details>
+
+      <hr class="divider" />
+
+      <div class="status-mini">
+        <div class="status-row">
+          <span class="status-label">简历数据</span>
+          <span class="status-value" id="resume-status">未录入</span>
+        </div>
+        <div class="status-row">
+          <span class="status-label">Jev API Key</span>
+          <span class="status-value" id="key-status">未填写</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <section class="fill-bar">
+    <label><input type="checkbox" id="confirm-agreements"> 已审阅并同意在本次填写中勾选招聘协议／真实性声明</label>
+    <div class="fill-actions">
+      <button class="btn primary" id="btn-start-fill">开始自动填写</button>
+      <button class="btn ghost" id="btn-stop-fill">停止填写</button>
+      <span class="fill-progress" id="fill-progress">待开始</span>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <button class="btn primary save-btn" id="btn-save">保存简历</button>
+    <button class="btn ghost" id="btn-test-snapshot">测试快照</button>
+    <button class="btn ghost" id="btn-dump-struct">导出页面结构</button>
+  </footer>
+
+  <section class="log" id="log" aria-live="polite">
+    <p class="log-empty">日志区，操作结果显示在这里。</p>
+  </section>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

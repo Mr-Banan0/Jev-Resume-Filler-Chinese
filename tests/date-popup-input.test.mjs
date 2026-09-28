@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {planObservedPopup} from '../lib/interaction.js';
+const field={path:'family[0].birthDate',value:'1964-10-05',label:'出生日期'};
+const editor={index:'edit',kind:'input',label:'请选择出生日期',value:'',context:'popup',operations:['TYPE_TEXT']};
+const plan=elements=>planObservedPopup({elements,field,history:[],matchesValue:()=>false});
+assert.equal(plan([editor]).actions[0].operation,'TYPE_TEXT');
+const day={index:'day',label:'5',calendarDate:'1964-10-05',context:'popup',operations:['CLICK']};
+assert.equal(plan([{...editor,value:field.value},day]).actions[0].target,'day');
+assert.equal(plan([{...editor,value:field.value}]).status,'blocked');
+console.log('Date popup: fill exact date then commit observed day; missing day stays blocked');
