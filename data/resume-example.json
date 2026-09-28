@@ -17,6 +17,13 @@
     "highestDegree": "硕士",
     "summary": "3 年前端开发经验，熟悉 React/Vue 全家桶，有大型 ToB 项目经验。"
   },
+  "application": {
+    "emergencyContactName": "王五",
+    "emergencyContactPhone": "13900139000",
+    "recruitmentSource": "校园招聘官网",
+    "recruitmentSourceDetail": "校园招聘官网",
+    "interviewSite": "北京"
+  },
   "expected": {
     "salary": "30-40万",
     "city": "北京",
@@ -29,6 +36,7 @@
   "education": [
     {
       "institution": "北京大学",
+      "department": "信息科学技术学院",
       "area": "计算机科学与技术",
       "studyType": "本科",
       "startDate": "2016-09",
@@ -43,6 +51,7 @@
     },
     {
       "institution": "清华大学",
+      "department": "软件学院",
       "area": "软件工程",
       "studyType": "硕士",
       "startDate": "2020-09",
@@ -63,6 +72,8 @@
       "startDate": "2022-06",
       "endDate": "2022-09",
       "summary": "参与商家收银台 H5 开发，完成支付流程页。",
+      "department": "前端研发部",
+      "isPresent": false,
       "highlights": [],
       "leaveReason": "实习结束",
       "currentSalary": "300元/天"
@@ -75,6 +86,8 @@
       "startDate": "2023-07",
       "endDate": "至今",
       "summary": "负责抖音电商商家端 PC 后台开发，主导订单管理模块重构，性能提升 40%。",
+      "department": "商家产品研发部",
+      "isPresent": true,
       "highlights": ["订单管理模块重构", "性能优化 40%"],
       "leaveReason": "",
       "currentSalary": "25万"
@@ -117,8 +130,39 @@
     { "name": "普通话一级乙等", "date": "2018-09", "issuer": "国家语委" },
     { "name": "机动车驾驶证 C1", "date": "2017-07", "issuer": "公安部交管局" }
   ],
+  "campusPractice": [
+    {
+      "organization": "北京大学学生会",
+      "serviceHours": "120",
+      "position": "技术部部长",
+      "startDate": "2017-09",
+      "endDate": "2019-06",
+      "summary": "组织校园技术分享和志愿服务活动。"
+    }
+  ],
   "awards": [
     { "title": "字节跳动 2024 年度优秀员工", "date": "2025-01", "awarder": "字节跳动" }
+  ],
+  "publications": [
+    {
+      "title": "示例论文标题",
+      "type": "期刊论文",
+      "level": "SCI",
+      "zone": "一区",
+      "journal": "示例期刊",
+      "date": "2024-06",
+      "authorOrder": "第一作者",
+      "details": "示例论文摘要。"
+    }
+  ],
+  "patents": [
+    { "name": "示例发明专利", "number": "ZL 2024 1 0000000.0", "date": "2024-01", "value": "示例技术价值。" }
+  ],
+  "family": [
+    { "relationship": "父亲", "name": "王五", "birthDate": "1970-01-01", "company": "示例单位", "position": "职员", "politicalStatus": "群众", "education": "本科", "remarks": "" }
+  ],
+  "training": [
+    { "organization": "示例培训机构", "name": "数据分析训练营", "startDate": "2023-07", "endDate": "2023-08", "summary": "完成数据分析课程与项目实践。" }
   ],
   "interests": ["阅读", "跑步", "摄影"]
 }

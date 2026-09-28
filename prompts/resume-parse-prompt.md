@@ -8,19 +8,21 @@
 
 ## 目标 Schema
 
-顶层分节：`basics` / `expected` / `profiles` / `education` / `internship` / `work` / `projects` / `skills` / `languages` / `certificates` / `awards` / `interests`。完整字段定义见 `data/resume-schema.json`，示例见 `data/resume-example.json`。
+顶层分节：`basics` / `application` / `expected` / `profiles` / `education` / `campusPractice` / `internship` / `work` / `projects` / `publications` / `skills` / `languages` / `certificates` / `awards` / `patents` / `family` / `training` / `interests`。完整字段定义见 `data/resume-schema.json`，示例见 `data/resume-example.json`。
 
 ## 转换规则
 
 1. 输出**严格 JSON**：无 markdown 代码块包裹、无注释、无多余文字。
 2. 所有日期统一 `YYYY-MM`（能确定到日则用 `YYYY-MM-DD`）；"至今"保留原样。
 3. 字段值不确定 → 留空字符串 `""` 或空数组 `[]`，**不要猜测**。
-4. 数组字段（`education` / `internship` / `work` / `projects` / `skills` / `languages` / `certificates` / `awards`）按简历内容逐段展开，每段一个对象。
+4. 数组字段（`education` / `campusPractice` / `internship` / `work` / `projects` / `publications` / `skills` / `languages` / `certificates` / `awards` / `patents` / `family` / `training`）按简历内容逐段展开，每段一个对象。
 5. **实习与正式工作分开**：`internship[]` 放实习经历，`work[]` 放正式工作经历。判断依据：经历里出现"实习"字样、或职位含"实习生 / Intern" → 归入 `internship[]`；否则归入 `work[]`。同一段经历只进一个数组，不重复。国内网申常把实习和工作分两个区填写，分开放置才能对上。
 6. **教育经历逐段展开**：本科 / 硕士研究生 / 博士研究生 / MBA 等各为 `education[]` 里独立一段，`studyType` 填 `本科` / `硕士` / `博士` / `MBA` 等。研究生段尽量补 `lab`（实验室/课题组）、`advisor`（导师）、`thesis`（毕设/论文方向）；本科段没写就留空。
 7. **技能带熟练度**：`skills[N].items` 每项是 `{"skill": "...", "level": "..."}`。level 只取 `入门` / `了解` / `熟悉` / `熟练` / `精通` 之一；简历没标熟练度 → level 留空字符串 `""`，不要编造。
 8. `expected.acceptRelocation` 取 `"是"` / `"否"` / `"可商量"` 之一；简历没提就留空。
 9. `expected.startDate` 取 `"随时"` / `"一周内"` / `"两周内"` / `"一个月内"` / `"三个月内"` / `"面议"` 之一；简历没提就留空。
+10. `application` 仅记录用户确认过的申请资料：紧急联系人、招聘信息来源与面试站点。内推码不写入 JSON。
+11. 实习或工作仍在进行时，填写 `isPresent: true`；网站要求结束日期而用户只提供“至今”时，由用户确认替代日期。
 
 ## 中文简历常见表述 → JSON 字段映射
 
@@ -42,6 +44,12 @@
 | 证件号码 / 身份证号 / 身份证号码 | `basics.idNumber`（简历没写就留空，不要编造） |
 | 最高学历 | `basics.highestDegree` |
 | 自我介绍 / 个人简介 / 自我评价 | `basics.summary` |
+| 个人成就 / 主要成就 | `basics.achievements` |
+| 毕业时间 | `basics.graduationDate` |
+| 身高 / 体重 | `basics.heightCm` / `basics.weightKg` |
+| 家庭地址 / 通信地址 | `basics.homeAddress` / `basics.mailingAddress` |
+| 紧急联系人姓名 / 电话 | `application.emergencyContactName` / `application.emergencyContactPhone` |
+| 招聘信息来源 / 面试站点 | `application.recruitmentSource` / `application.interviewSite` |
 | 期望薪资 / 薪资要求 / 期望月薪 / 期望年薪 | `expected.salary` |
 | 期望城市 / 期望工作地 | `expected.city` |
 | 到岗时间 / 入职时间 / 可到岗时间 | `expected.startDate` |
@@ -59,6 +67,7 @@
 | 实习公司 / 实习单位 / 实习经历 | `internship[N].company` |
 | 实习岗位 / 实习职位 | `internship[N].position` |
 | 实习描述 / 实习内容 | `internship[N].summary` |
+| 实习部门 / 所属部门 | `internship[N].department` |
 | 公司 / 工作单位 / 工作经历 | `work[N].company` |
 | 职位 / 岗位 | `work[N].position` |
 | 工作描述 / 工作内容 / 职责 | `work[N].summary` |
@@ -72,6 +81,11 @@
 | 语言 / 语言能力 | `languages` |
 | 证书 / 资格证书 / 技能证书 | `certificates` |
 | 获奖 / 获奖经历 / 荣誉 | `awards` |
+| 专利 / 发明专利 | `patents` |
+| 论文 / 发表论文 / 论文著作 | `publications` |
+| 班级职务 / 学生组织 / 志愿服务 / 校内实践 | `campusPractice` |
+| 家庭成员 / 家庭关系 | `family` |
+| 培训 / 培训经历 | `training` |
 | 兴趣 / 兴趣爱好 / 爱好 | `interests` |
 
 ## human-in-the-loop 规则
@@ -79,7 +93,7 @@
 解析完后对照 Schema 逐字段检查：
 
 1. **必填字段**（`basics.name`）缺失 → **立即询问用户**："简历里没找到姓名，请提供。"
-2. **关键字段**（`basics.phone` / `basics.email` / `education` / `work`）缺失或明显不完整 → **询问用户**："简历里没找到 XX，请补充，或回复'简历没写'留空。"
+2. **关键字段**（`basics.phone` / `basics.email` / `education` / `work` 或 `internship`）缺失或明显不完整 → **询问用户**："简历里没找到 XX，请补充，或回复'简历没写'留空。"
 3. **可选字段**（`skills` / `certificates` / `interests` / `projects` / `awards` / `languages` / `basics.idNumber`）缺失 → **留空，不询问**。证件号码属敏感信息，由用户自己决定是否填写。
 
 用户回复"简历没写" / "没有" / "跳过" → 该字段留空字符串 `""` 或空数组 `[]`，**不再追问**。

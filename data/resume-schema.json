@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://jev-resume-filler.local/resume-schema.json",
   "title": "Jev Resume Filler 简历 Schema",
-  "description": "网申自动填写插件使用的简历数据结构，面向中国国内网申场景。顶层为分节对象：basics / expected / profiles / education / internship / work / projects / publications / skills / languages / certificates / awards / interests。",
+  "description": "网申自动填写插件使用的简历数据结构，面向中国国内网申场景。顶层包含基本信息、申请信息、期望信息、教育、校内实践、实习、工作、项目、论文、技能、语言、证书、奖项、专利、家庭关系与培训经历。",
   "type": "object",
   "required": ["basics"],
   "properties": {
@@ -148,7 +148,20 @@
           "enum": ["初中", "高中", "中专", "大专", "本科", "硕士", "博士", ""],
           "examples": ["硕士"]
         },
-        "summary": { "type": "string", "title": "自我介绍" }
+        "summary": { "type": "string", "title": "自我介绍" },
+        "graduationDate": { "type": "string", "title": "毕业时间" },
+        "achievements": { "type": "string", "title": "个人成就" }
+      }
+    },
+    "application": {
+      "type": "object",
+      "title": "申请信息",
+      "properties": {
+        "emergencyContactName": { "type": "string", "title": "紧急联系人姓名" },
+        "emergencyContactPhone": { "type": "string", "title": "紧急联系电话" },
+        "recruitmentSource": { "type": "string", "title": "招聘信息来源" },
+        "recruitmentSourceDetail": { "type": "string", "title": "招聘信息具体来源" },
+        "interviewSite": { "type": "string", "title": "校招面试站点" }
       }
     },
     "expected": {
@@ -261,6 +274,8 @@
           "startDate": { "type": "string", "title": "开始时间" },
           "endDate": { "type": "string", "title": "结束时间" },
           "summary": { "type": "string", "title": "实习描述" },
+          "department": { "type": "string", "title": "部门" },
+          "isPresent": { "type": "boolean", "title": "是否仍在职" },
           "highlights": { "type": "array", "title": "实习亮点", "items": { "type": "string" } },
           "leaveReason": { "type": "string", "title": "结束原因", "examples": ["实习结束"] },
           "currentSalary": { "type": "string", "title": "实习补贴", "examples": ["300元/天", "5000元/月"] }
@@ -279,6 +294,8 @@
           "startDate": { "type": "string", "title": "开始时间" },
           "endDate": { "type": "string", "title": "结束时间", "examples": ["至今"] },
           "summary": { "type": "string", "title": "工作描述" },
+          "department": { "type": "string", "title": "部门" },
+          "isPresent": { "type": "boolean", "title": "是否仍在职" },
           "highlights": { "type": "array", "title": "工作亮点", "items": { "type": "string" } },
           "leaveReason": { "type": "string", "title": "离职原因", "description": "在职留空" },
           "currentSalary": { "type": "string", "title": "目前年薪", "examples": ["25万"] }
@@ -418,6 +435,20 @@
           "politicalStatus": {"type":"string","title":"政治面貌"},
           "education": {"type":"string","title":"教育程度"},
           "remarks": {"type":"string","title":"备注"}
+        }
+      }
+    },
+    "training": {
+      "type": "array",
+      "title": "培训经历",
+      "items": {
+        "type": "object",
+        "properties": {
+          "organization": { "type": "string", "title": "培训机构" },
+          "name": { "type": "string", "title": "培训名称" },
+          "startDate": { "type": "string", "title": "开始时间" },
+          "endDate": { "type": "string", "title": "结束时间" },
+          "summary": { "type": "string", "title": "培训内容" }
         }
       }
     },
