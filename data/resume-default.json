@@ -1,6 +1,12 @@
 {
   "basics": {
+    "heightCm": 0,
+    "weightKg": 0,
+    "homeAddress": "",
+    "mailingAddress": "",
+    "lifePhotos": [],
     "name": "",
+    "resumeFile": {"name": "", "type": "", "size": 0, "dataUrl": ""},
     "label": "",
     "gender": "",
     "birthDate": "",
@@ -34,7 +40,16 @@
     "idType": "",
     "idNumber": "",
     "highestDegree": "",
-    "summary": ""
+    "summary": "",
+    "graduationDate": "",
+    "achievements": ""
+  },
+  "application": {
+    "emergencyContactName": "",
+    "emergencyContactPhone": "",
+    "recruitmentSource": "",
+    "recruitmentSourceDetail": "",
+    "interviewSite": ""
   },
   "expected": {
     "salary": "",
@@ -47,6 +62,7 @@
     {
       "institution": "",
       "country": "",
+      "department": "",
       "area": "",
       "studyType": "",
       "degree": "",
@@ -71,6 +87,8 @@
       "startDate": "",
       "endDate": "",
       "summary": "",
+      "department": "",
+      "isPresent": false,
       "highlights": [],
       "leaveReason": "",
       "currentSalary": ""
@@ -83,6 +101,8 @@
       "startDate": "",
       "endDate": "",
       "summary": "",
+      "department": "",
+      "isPresent": false,
       "highlights": [],
       "leaveReason": "",
       "currentSalary": ""
@@ -106,6 +126,9 @@
   ],
   "certificates": [],
   "awards": [],
+  "patents": [],
   "family": [],
+  "campusPractice": [],
+  "training": [],
   "interests": []
 }
