@@ -1,0 +1,111 @@
+{
+  "basics": {
+    "name": "",
+    "label": "",
+    "gender": "",
+    "birthDate": "",
+    "phone": "",
+    "email": "",
+    "location": {
+      "city": "",
+      "address": "",
+      "region": {
+        "province": "",
+        "city": "",
+        "district": ""
+      }
+    },
+    "hukou": "",
+    "nativePlace": "",
+    "nativePlaceDetail": {
+      "province": "",
+      "city": "",
+      "district": ""
+    },
+    "hukouDetail": {
+      "province": "",
+      "city": "",
+      "district": ""
+    },
+    "ethnicity": "",
+    "nationality": "",
+    "maritalStatus": "",
+    "politicalStatus": "",
+    "idType": "",
+    "idNumber": "",
+    "highestDegree": "",
+    "summary": ""
+  },
+  "expected": {
+    "salary": "",
+    "city": "",
+    "startDate": "",
+    "acceptRelocation": ""
+  },
+  "profiles": [],
+  "education": [
+    {
+      "institution": "",
+      "country": "",
+      "area": "",
+      "studyType": "",
+      "degree": "",
+      "primaryDiscipline": "",
+      "startDate": "",
+      "endDate": "",
+      "gpa": "",
+      "ranking": "",
+      "studentCadre": "",
+      "courses": [],
+      "schoolExperience": "",
+      "scholarships": "",
+      "lab": "",
+      "advisor": "",
+      "thesis": ""
+    }
+  ],
+  "internship": [
+    {
+      "company": "",
+      "position": "",
+      "startDate": "",
+      "endDate": "",
+      "summary": "",
+      "highlights": [],
+      "leaveReason": "",
+      "currentSalary": ""
+    }
+  ],
+  "work": [
+    {
+      "company": "",
+      "position": "",
+      "startDate": "",
+      "endDate": "",
+      "summary": "",
+      "highlights": [],
+      "leaveReason": "",
+      "currentSalary": ""
+    }
+  ],
+  "projects": [],
+  "publications": [],
+  "skills": [
+    {
+      "name": "编程语言",
+      "items": [
+        { "skill": "", "level": "" }
+      ]
+    }
+  ],
+  "languages": [
+    {
+      "language": "",
+      "fluency": ""
+    }
+  ],
+  "certificates": [],
+  "awards": [],
+  "family": [],
+  "interests": []
+}

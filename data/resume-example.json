@@ -1,0 +1,124 @@
+{
+  "basics": {
+    "name": "张三",
+    "label": "前端工程师",
+    "gender": "男",
+    "birthDate": "1998-05",
+    "phone": "13800138000",
+    "email": "zhangsan@example.com",
+    "location": {
+      "city": "北京",
+      "address": "海淀区中关村大街"
+    },
+    "hukou": "北京",
+    "nativePlace": "河北省石家庄市",
+    "maritalStatus": "未婚",
+    "politicalStatus": "群众",
+    "highestDegree": "硕士",
+    "summary": "3 年前端开发经验，熟悉 React/Vue 全家桶，有大型 ToB 项目经验。"
+  },
+  "expected": {
+    "salary": "30-40万",
+    "city": "北京",
+    "startDate": "一个月内",
+    "acceptRelocation": "是"
+  },
+  "profiles": [
+    { "network": "GitHub", "username": "zhangsan", "url": "https://github.com/zhangsan" }
+  ],
+  "education": [
+    {
+      "institution": "北京大学",
+      "area": "计算机科学与技术",
+      "studyType": "本科",
+      "startDate": "2016-09",
+      "endDate": "2020-06",
+      "gpa": "3.7/4.0",
+      "courses": ["数据结构", "操作系统", "计算机网络"],
+      "schoolExperience": "学生会技术部部长，组织过 3 次技术分享会",
+      "scholarships": "国家奖学金（2018-2019）",
+      "lab": "",
+      "advisor": "",
+      "thesis": "基于 Web 的简历自动填写系统设计与实现"
+    },
+    {
+      "institution": "清华大学",
+      "area": "软件工程",
+      "studyType": "硕士",
+      "startDate": "2020-09",
+      "endDate": "2023-06",
+      "gpa": "3.8/4.0",
+      "courses": [],
+      "schoolExperience": "",
+      "scholarships": "",
+      "lab": "智能软件工程实验室",
+      "advisor": "李四教授",
+      "thesis": "基于大语言模型的代码生成与优化研究"
+    }
+  ],
+  "internship": [
+    {
+      "company": "美团",
+      "position": "前端实习生",
+      "startDate": "2022-06",
+      "endDate": "2022-09",
+      "summary": "参与商家收银台 H5 开发，完成支付流程页。",
+      "highlights": [],
+      "leaveReason": "实习结束",
+      "currentSalary": "300元/天"
+    }
+  ],
+  "work": [
+    {
+      "company": "字节跳动",
+      "position": "前端开发工程师",
+      "startDate": "2023-07",
+      "endDate": "至今",
+      "summary": "负责抖音电商商家端 PC 后台开发，主导订单管理模块重构，性能提升 40%。",
+      "highlights": ["订单管理模块重构", "性能优化 40%"],
+      "leaveReason": "",
+      "currentSalary": "25万"
+    }
+  ],
+  "projects": [
+    {
+      "name": "简历自动填写插件",
+      "role": "独立开发者",
+      "startDate": "2026-09",
+      "endDate": "至今",
+      "description": "基于 Jev 决策模型的 Chrome 扩展，用于网申时自动填写简历。",
+      "techStack": ["Chrome MV3", "JavaScript", "TypeSafe Jev"]
+    }
+  ],
+  "skills": [
+    {
+      "name": "编程语言",
+      "items": [
+        { "skill": "JavaScript", "level": "精通" },
+        { "skill": "TypeScript", "level": "熟练" },
+        { "skill": "Python", "level": "熟悉" }
+      ]
+    },
+    {
+      "name": "前端框架",
+      "items": [
+        { "skill": "React", "level": "精通" },
+        { "skill": "Vue", "level": "熟练" },
+        { "skill": "Next.js", "level": "熟悉" }
+      ]
+    }
+  ],
+  "languages": [
+    { "language": "普通话", "fluency": "一级乙等" },
+    { "language": "英语", "fluency": "CET-6" }
+  ],
+  "certificates": [
+    { "name": "CET-6", "date": "2019-06", "issuer": "教育部" },
+    { "name": "普通话一级乙等", "date": "2018-09", "issuer": "国家语委" },
+    { "name": "机动车驾驶证 C1", "date": "2017-07", "issuer": "公安部交管局" }
+  ],
+  "awards": [
+    { "title": "字节跳动 2024 年度优秀员工", "date": "2025-01", "awarder": "字节跳动" }
+  ],
+  "interests": ["阅读", "跑步", "摄影"]
+}

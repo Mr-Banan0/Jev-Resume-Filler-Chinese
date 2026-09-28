@@ -1,0 +1,16 @@
+# Dependencies and local tool output
+node_modules/
+coverage/
+.DS_Store
+
+# Personal resume data and attachments
+resume-parsed.json
+data/profile-updates-*.json
+data/photos/
+*.local.json
+
+# Local runtime artifacts
+*.log
+.env
+.workbuddy/
+HANDOFF*.md

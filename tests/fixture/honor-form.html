@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>离线自测页 · 个人基本信息（仿荣耀网申）</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", sans-serif; margin: 0; padding: 24px; background: #f5f6f8; color: #1f2329; }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  .card { background: #fff; border-radius: 8px; padding: 20px 24px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .step { color: #8a8f99; font-size: 13px; margin-bottom: 18px; }
+  .row { display: flex; align-items: center; margin-bottom: 14px; }
+  .lbl { width: 120px; flex: 0 0 120px; font-size: 14px; color: #4e5969; text-align: right; padding-right: 12px; }
+  .lbl i { color: #e5493a; font-style: normal; margin-right: 2px; }
+  .ctl { flex: 1 1 auto; position: relative; }
+  input[type=text], select { width: 100%; height: 34px; box-sizing: border-box; border: 1px solid #d9dde3; border-radius: 4px; padding: 0 10px; font-size: 14px; background: #fff; }
+  .picker { display: flex; gap: 8px; }
+  .picker select { flex: 1 1 0; }
+  .fake-select { height: 34px; line-height: 34px; border: 1px solid #d9dde3; border-radius: 4px; padding: 0 10px; font-size: 14px; background: #fff; cursor: pointer; color: #1f2329; }
+  .fake-select.empty { color: #a8adb5; }
+  .pop { position: absolute; z-index: 40; top: 38px; left: 0; right: 0; max-height: 200px; overflow: auto; background: #fff; border: 1px solid #d9dde3; border-radius: 4px; box-shadow: 0 4px 12px rgba(0,0,0,.12); display: none; }
+  .pop.open { display: block; }
+  .pop div { padding: 7px 12px; font-size: 14px; cursor: pointer; }
+  .pop div:hover { background: #eef3ff; }
+  .radios { display: flex; gap: 18px; align-items: center; font-size: 14px; }
+  .radios label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  /* 皮肤在外、原生 input 藏在里面的勾选框：网申站最普遍的写法 */
+  .skin { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
+  /* 另一种藏法：不加 opacity，只把尺寸归零 */
+  .skin2 { position: absolute; width: 0; height: 0; pointer-events: none; }
+  .dot { width: 16px; height: 16px; border: 1px solid #c9ced6; border-radius: 50%; display: inline-block; }
+  .box { width: 16px; height: 16px; border: 1px solid #c9ced6; border-radius: 3px; display: inline-block; }
+  label.opt { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  input:checked + .dot, input:checked + .box { border-color: #0064c8; background: #0064c8; }
+  .spacer { height: 420px; }
+  .hint { color: #8a8f99; font-size: 12px; margin-top: 6px; }
+  .footer { margin-top: 18px; display: flex; justify-content: flex-end; gap: 10px; }
+  button { height: 36px; padding: 0 22px; border-radius: 4px; border: 1px solid #d9dde3; background: #fff; font-size: 14px; cursor: pointer; }
+  button.primary { background: #0064c8; border-color: #0064c8; color: #fff; }
+  #result { margin-top: 16px; font-size: 13px; color: #4e5969; white-space: pre-wrap; background: #fff; border-radius: 8px; padding: 14px 18px; display: none; }
+  /* 分段列表页：每段是一张可点的 div 卡片，整块没有一个原生表单控件 */
+  .am-list-body > div { padding: 14px 18px; border-bottom: 1px solid #eceef1; font-size: 14px; }
+  .resumer-common { cursor: pointer; }
+  .resumer-common-incomplete { color: #e5493a; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>个人基本信息</h1>
+    <div class="step">步骤 1 / 13 &nbsp;·&nbsp; 离线自测页（仿荣耀网申表单结构）</div>
+
+    <div class="row"><div class="lbl"><i>*</i>姓名</div><div class="ctl">
+      <input type="text" id="f-name" name="name" placeholder="请填写姓名">
+    </div></div>
+
+    <div class="row"><div class="lbl">性别</div><div class="ctl">
+      <div class="radios">
+        <label class="opt" id="g-m-label"><input class="skin" type="radio" name="gender" id="g-m" value="男"><span class="dot"></span>男</label>
+        <label class="opt" id="g-f-label"><input class="skin" type="radio" name="gender" id="g-f" value="女"><span class="dot"></span>女</label>
+      </div>
+    </div></div>
+
+    <div class="row"><div class="lbl">性别（下拉版）</div><div class="ctl">
+      <div class="fake-select empty" id="f-gender" role="combobox" aria-haspopup="listbox" aria-expanded="false" tabindex="0" data-placeholder="请选择性别">请选择性别</div>
+      <div class="pop" role="listbox" id="f-gender-pop">
+        <div role="option">男</div>
+        <div role="option">女</div>
+      </div>
+    </div></div>
+
+    <div class="row"><div class="lbl"><i>*</i>年龄</div><div class="ctl">
+      <input type="text" id="f-age" placeholder="请填写年龄">
+    </div></div>
+
+    <div class="row"><div class="lbl"><i>*</i>证件类型</div><div class="ctl">
+      <select id="f-idtype">
+        <option value="">请选择</option>
+        <option>身份证</option>
+        <option>护照</option>
+        <option>港澳通行证</option>
+        <option>台胞证</option>
+        <option>其他</option>
+      </select>
+    </div></div>
+
+    <div class="row"><div class="lbl"><i>*</i>证件号码</div><div class="ctl">
+      <input type="text" id="f-idnumber" name="idNumber" placeholder="请填写证件号码">
+    </div></div>
+
+    <div class="row"><div class="lbl">出生日期</div><div class="ctl">
+      <div class="picker">
+        <select id="f-birth-y"><option value="">年</option></select>
+        <select id="f-birth-m"><option value="">月</option></select>
+      </div>
+    </div></div>
+
+    <div class="row"><div class="lbl">籍贯</div><div class="ctl">
+      <div class="picker">
+        <select id="f-np-prov"><option value="">省</option></select>
+        <select id="f-np-city"><option value="">市</option></select>
+        <select id="f-np-dist"><option value="">区/县</option></select>
+      </div>
+    </div></div>
+
+    <div class="row"><div class="lbl">户口所在地</div><div class="ctl">
+      <div class="picker">
+        <select id="f-hk-prov"><option value="">省</option></select>
+        <select id="f-hk-city"><option value="">市</option></select>
+      </div>
+    </div></div>
+
+    <div class="row"><div class="lbl">婚姻状况</div><div class="ctl">
+      <div class="fake-select empty" id="f-marital" role="combobox" aria-haspopup="listbox" aria-expanded="false" tabindex="0" data-placeholder="请选择婚姻状况">请选择婚姻状况</div>
+      <div class="pop" role="listbox" id="f-marital-pop">
+        <div role="option">未婚</div>
+        <div role="option">已婚</div>
+        <div role="option">离异</div>
+      </div>
+    </div></div>
+
+    <div class="row"><div class="lbl">政治面貌</div><div class="ctl">
+      <select id="f-political">
+        <option value="">请选择</option>
+        <option>中共党员</option>
+        <option>共青团员</option>
+        <option>民主党派</option>
+        <option>群众</option>
+      </select>
+    </div></div>
+
+    <div class="row"><div class="lbl"><i>*</i>个人邮箱</div><div class="ctl">
+      <input type="email" id="f-email" name="personalEmail" placeholder="请填写个人邮箱">
+    </div></div>
+
+    <div class="row"><div class="lbl"><i>*</i>移动电话</div><div class="ctl">
+      <input type="tel" id="f-phone" name="mobile" placeholder="请填写移动电话">
+    </div></div>
+
+    <!-- 隐藏域：不应被采集 -->
+    <input type="hidden" id="f-hidden" value="SECRET" />
+    <div style="display:none"><input type="text" id="f-display-none" placeholder="不可见字段" /></div>
+
+    <div class="spacer"></div>
+
+    <!-- 视口外字段：修复前会被裁掉，修复后应带 offscreen 标记被采集 -->
+    <div class="row"><div class="lbl">现居城市</div><div class="ctl">
+      <input type="text" id="f-city" placeholder="请填写现居城市">
+    </div></div>
+
+    <div class="row"><div class="lbl">最高学历</div><div class="ctl">
+      <select id="f-degree">
+        <option value="">请选择</option>
+        <option>本科</option>
+        <option>硕士</option>
+        <option>博士</option>
+      </select>
+    </div></div>
+
+    <div class="row"><div class="lbl">现居详细地址</div><div class="ctl">
+      <input type="text" id="f-address" placeholder="请填写现居详细地址">
+    </div></div>
+
+    <!-- label[for] 在外面的写法：input 与 label 是兄弟 -->
+    <div class="row"><div class="lbl"><i>*</i>声明</div><div class="ctl">
+      <span class="cbx"><input class="skin2" type="checkbox" id="f-agree"></span>
+      <label class="opt" for="f-agree"><span class="box"></span>我已阅读并同意《隐私政策》</label>
+    </div></div>
+
+    <div class="footer">
+      <button type="button">取消</button>
+      <button type="button" class="primary" id="f-next">下一步</button>
+    </div>
+    <div class="hint">本页用于离线验证扩展的采集与填写链路，点「下一步」只做记录，不会提交任何数据。</div>
+  </div>
+
+  <!-- 分段列表页（仿荣耀 resumerDetail）：整块没有原生控件，每段是一张可点的 div 卡片。
+       修复前这里会得到 0 个元素，Jev 无从下手。 -->
+  <div class="am-list resumer-content">
+    <div class="am-list-body">
+      <div class="resumer-common resumer-header">示例姓名 · 简历头</div>
+      <div class="resumer-common resumer-common-incomplete">个人信息 未完成</div>
+      <div class="resumer-common resumer-common-incomplete">教育经历 未完成</div>
+      <div class="resumer-common resumer-common-incomplete">实习经历 未完成</div>
+      <div class="resumer-common resumer-common-incomplete">项目经历 未完成</div>
+    </div>
+  </div>
+
+  <div id="result"></div>
+</div>
+
+<script>
+// ---- 年份 / 地区候选数据 ----
+(function () {
+  const y = document.getElementById('f-birth-y');
+  for (let i = 1990; i <= 2010; i++) {
+    const o = document.createElement('option'); o.textContent = i; y.appendChild(o);
+  }
+  const m = document.getElementById('f-birth-m');
+  for (let i = 1; i <= 12; i++) {
+    const o = document.createElement('option'); o.textContent = i + '月'; m.appendChild(o);
+  }
+})();
+
+const REGION = {
+  '广东省': {
+    '河源市': ['和平县', '源城区', '紫金县'],
+    '广州市': ['天河区', '越秀区', '番禺区'],
+    '深圳市': ['南山区', '福田区', '宝安区']
+  },
+  '湖南省': { '长沙市': ['岳麓区', '芙蓉区'] }
+};
+
+function fillSel(sel, list, ph) {
+  sel.innerHTML = '';
+  const o0 = document.createElement('option'); o0.value = ''; o0.textContent = ph; sel.appendChild(o0);
+  for (const v of list) { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); }
+}
+
+function bindCascade(provId, cityId, distId) {
+  const prov = document.getElementById(provId);
+  const city = document.getElementById(cityId);
+  const dist = distId ? document.getElementById(distId) : null;
+  fillSel(prov, Object.keys(REGION), '省');
+  prov.addEventListener('change', () => {
+    const p = prov.value;
+    fillSel(city, p && REGION[p] ? Object.keys(REGION[p]) : [], '市');
+    if (dist) fillSel(dist, [], '区/县');
+  });
+  city.addEventListener('change', () => {
+    if (!dist) return;
+    const p = prov.value, c = city.value;
+    const list = p && c && REGION[p] && REGION[p][c] ? REGION[p][c] : [];
+    fillSel(dist, list, '区/县');
+  });
+}
+bindCascade('f-np-prov', 'f-np-city', 'f-np-dist');
+bindCascade('f-hk-prov', 'f-hk-city', null);
+
+// ---- 自定义只读下拉：点开才出现 listbox 浮层 ----
+function bindFakeSelect(id) {
+  const box = document.getElementById(id);
+  const pop = document.getElementById(id + '-pop');
+  box.addEventListener('click', () => {
+    const open = pop.classList.toggle('open');
+    box.setAttribute('aria-expanded', String(open));
+  });
+  pop.addEventListener('click', (e) => {
+    const item = e.target.closest('[role=option]');
+    if (!item) return;
+    box.textContent = item.textContent;
+    box.classList.remove('empty');
+    box.dataset.value = item.textContent;
+    box.setAttribute('aria-expanded', 'false');
+    pop.classList.remove('open');
+  });
+  document.addEventListener('click', (e) => {
+    if (!box.contains(e.target) && !pop.contains(e.target)) {
+      pop.classList.remove('open');
+      box.setAttribute('aria-expanded', 'false');
+    }
+  });
+}
+bindFakeSelect('f-gender');
+bindFakeSelect('f-marital');
+
+// ---- 分段列表卡片：点一下记录一下，供自动测试断言"卡片真的被点到了" ----
+document.querySelectorAll('.resumer-common').forEach((el) => {
+  el.addEventListener('click', () => {
+    el.dataset.clicked = '1';
+    const box = document.getElementById('result');
+    if (box) {
+      box.style.display = 'block';
+      box.textContent = `【分段卡片】进入：${el.textContent.trim()}`;
+    }
+  });
+});
+
+// ---- 下一步：仅打印当前表单已填内容，便于人眼核对 ----
+document.getElementById('f-next').addEventListener('click', () => {
+  const val = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return '(无)';
+    if (el.tagName === 'SELECT') return el.value || '(空)';
+    if (el.dataset && el.dataset.value) return el.dataset.value;
+    return el.value || el.textContent.trim() || '(空)';
+  };
+  // 隐藏的原生勾选框：看它的 checked 状态，而不是看 value
+  const checkedText = (nameOrId) => {
+    const nodes = document.getElementsByName(nameOrId);
+    const list = nodes.length ? Array.from(nodes) : [document.getElementById(nameOrId)].filter(Boolean);
+    const hit = list.find((n) => n.checked);
+    return hit ? `已选 ${hit.value || '是'}` : '(未选)';
+  };
+  const lines = [
+    ['姓名      ', val('f-name')],
+    ['性别(单选)', checkedText('gender')],
+    ['性别(下拉)', val('f-gender')],
+    ['年龄      ', val('f-age')],
+    ['证件类型  ', val('f-idtype')],
+    ['证件号码  ', val('f-idnumber')],
+    ['出生年    ', val('f-birth-y')],
+    ['出生月    ', val('f-birth-m')],
+    ['籍贯      ', [val('f-np-prov'), val('f-np-city'), val('f-np-dist')].filter(v => v !== '(空)').join(' / ') || '(空)'],
+    ['户口      ', [val('f-hk-prov'), val('f-hk-city')].filter(v => v !== '(空)').join(' / ') || '(空)'],
+    ['婚姻状况  ', val('f-marital')],
+    ['政治面貌  ', val('f-political')],
+    ['邮箱      ', val('f-email')],
+    ['手机      ', val('f-phone')],
+    ['现居城市  ', val('f-city')],
+    ['最高学历  ', val('f-degree')],
+    ['现居地址  ', val('f-address')],
+    ['同意声明  ', checkedText('f-agree')]
+  ];
+  const box = document.getElementById('result');
+  box.style.display = 'block';
+  box.textContent = '【下一步】当前表单内容\n' + lines.map(l => l[0] + ' : ' + l[1]).join('\n');
+});
+</script>
+</body>
+</html>

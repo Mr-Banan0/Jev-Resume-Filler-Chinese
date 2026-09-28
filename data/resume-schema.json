@@ -1,0 +1,430 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://jev-resume-filler.local/resume-schema.json",
+  "title": "Jev Resume Filler 简历 Schema",
+  "description": "网申自动填写插件使用的简历数据结构，面向中国国内网申场景。顶层为分节对象：basics / expected / profiles / education / internship / work / projects / publications / skills / languages / certificates / awards / interests。",
+  "type": "object",
+  "required": ["basics"],
+  "properties": {
+    "basics": {
+      "type": "object",
+      "title": "基本信息",
+      "required": ["name"],
+      "properties": {
+        "heightCm": {"type":"number","title":"身高（厘米）"},
+        "weightKg": {"type":"number","title":"体重（千克）"},
+        "homeAddress": {"type":"string","title":"家庭地址"},
+        "mailingAddress": {"type":"string","title":"目前通信地址"},
+        "lifePhotos": {
+          "type":"array","title":"生活照",
+          "items":{"type":"object","properties":{
+            "name":{"type":"string"},"type":{"type":"string"},
+            "assetPath":{"type":"string"},"dataUrl":{"type":"string"},
+            "size":{"type":"number"},"purpose":{"type":"string"},"fullBody":{"type":"boolean"}
+          }}
+        },
+        "name": {
+          "type": "string",
+          "title": "姓名",
+          "description": "真实姓名（必填）",
+          "examples": ["张三"]
+        },
+        "resumeFile": {
+          "type": "object",
+          "title": "简历附件",
+          "description": "插件本机保存的附件，用于站内上传",
+          "properties": {
+            "name": { "type": "string" },
+            "type": { "type": "string" },
+            "size": { "type": "number" },
+            "dataUrl": { "type": "string" }
+          }
+        },
+        "label": {
+          "type": "string",
+          "title": "求职意向",
+          "examples": ["前端工程师", "产品经理"]
+        },
+        "gender": {
+          "type": "string",
+          "title": "性别",
+          "enum": ["男", "女", ""],
+          "examples": ["男"]
+        },
+        "birthDate": {
+          "type": "string",
+          "title": "出生日期",
+          "description": "格式 YYYY-MM 或 YYYY-MM-DD",
+          "examples": ["1998-05", "1998-05-15"]
+        },
+        "phone": {
+          "type": "string",
+          "title": "手机",
+          "description": "11 位手机号",
+          "examples": ["13800138000"]
+        },
+        "email": {
+          "type": "string",
+          "title": "邮箱",
+          "examples": ["zhangsan@example.com"]
+        },
+        "location": {
+          "type": "object",
+          "title": "现居地",
+          "properties": {
+            "city": { "type": "string", "title": "现居城市", "examples": ["北京"] },
+            "address": { "type": "string", "title": "现居详细地址", "examples": ["海淀区中关村大街"] },
+            "region": {
+              "type": "object",
+              "title": "现居地省市区",
+              "properties": {
+                "province": { "type": "string", "title": "现居省", "examples": ["广东省"] },
+                "city": { "type": "string", "title": "现居市", "examples": ["深圳市"] },
+                "district": { "type": "string", "title": "现居区县", "examples": ["宝安区"] }
+              }
+            }
+          }
+        },
+        "hukou": {
+          "type": "string",
+          "title": "户口所在地",
+          "examples": ["北京", "河北省石家庄市"]
+        },
+        "nativePlace": {
+          "type": "string",
+          "title": "籍贯",
+          "description": "祖籍，与户口不同",
+          "examples": ["河北省石家庄市", "山东省青岛市"]
+        },
+        "nativePlaceDetail": {
+          "type": "object",
+          "title": "籍贯省市区",
+          "description": "供三级级联选择器使用；nativePlace 保留为普通文本控件的填写值。",
+          "properties": {
+            "province": { "type": "string", "title": "籍贯省", "examples": ["广东省"] },
+            "city": { "type": "string", "title": "籍贯市", "examples": ["河源市"] },
+            "district": { "type": "string", "title": "籍贯区县", "examples": ["和平县"] }
+          }
+        },
+        "hukouDetail": {
+          "type": "object",
+          "title": "户口省市区",
+          "description": "供三级级联选择器使用；hukou 保留为普通文本控件的填写值。",
+          "properties": {
+            "province": { "type": "string", "title": "户口省", "examples": ["广东省"] },
+            "city": { "type": "string", "title": "户口市", "examples": ["广州市"] },
+            "district": { "type": "string", "title": "户口区县", "examples": ["黄埔区"] }
+          }
+        },
+        "ethnicity": { "type": "string", "title": "民族", "examples": ["汉族"] },
+        "nationality": { "type": "string", "title": "国籍/地区", "examples": ["中国"] },
+        "maritalStatus": {
+          "type": "string",
+          "title": "婚姻状态",
+          "enum": ["未婚", "已婚", "离异", "丧偶", ""],
+          "examples": ["未婚"]
+        },
+        "politicalStatus": {
+          "type": "string",
+          "title": "政治面貌",
+          "enum": ["群众", "共青团员", "中共党员", "中共预备党员", "民主党派", ""],
+          "examples": ["群众"]
+        },
+        "idType": {
+          "type": "string",
+          "title": "证件类型",
+          "enum": ["身份证", "护照", "港澳通行证", "台胞证", "其他", ""],
+          "examples": ["身份证"]
+        },
+        "idNumber": {
+          "type": "string",
+          "title": "证件号码",
+          "description": "敏感信息，按需填写；网申的证件号码栏位由本字段填入",
+          "examples": [""]
+        },
+        "highestDegree": {
+          "type": "string",
+          "title": "最高学历",
+          "enum": ["初中", "高中", "中专", "大专", "本科", "硕士", "博士", ""],
+          "examples": ["硕士"]
+        },
+        "summary": { "type": "string", "title": "自我介绍" }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "title": "期望信息",
+      "properties": {
+        "salary": {
+          "type": "string",
+          "title": "期望薪资",
+          "examples": ["30-40万", "15-20K", "面议"]
+        },
+        "city": { "type": "string", "title": "期望城市", "examples": ["北京"] },
+        "startDate": {
+          "type": "string",
+          "title": "到岗时间",
+          "enum": ["随时", "一周内", "两周内", "一个月内", "三个月内", "面议", ""],
+          "examples": ["一个月内"]
+        },
+        "acceptRelocation": {
+          "type": "string",
+          "title": "是否接受异地",
+          "enum": ["是", "否", "可商量", ""],
+          "examples": ["是"]
+        }
+      }
+    },
+    "profiles": {
+      "type": "array",
+      "title": "社交主页",
+      "items": {
+        "type": "object",
+        "properties": {
+          "network": { "type": "string", "examples": ["GitHub", "掘金"] },
+          "username": { "type": "string" },
+          "url": { "type": "string", "format": "uri" }
+        }
+      }
+    },
+    "education": {
+      "type": "array",
+      "title": "教育经历",
+      "description": "可包含本科 / 硕士研究生 / 博士研究生 多段",
+      "items": {
+        "type": "object",
+        "properties": {
+          "institution": { "type": "string", "title": "学校", "examples": ["北京大学"] },
+          "country": { "type": "string", "title": "院校所在国家/地区" },
+          "department": { "type": "string", "title": "就读院/系" },
+          "area": { "type": "string", "title": "专业", "examples": ["计算机科学与技术"] },
+          "studyType": {
+            "type": "string",
+            "title": "学历",
+            "enum": ["大专", "本科", "硕士", "博士", ""],
+            "examples": ["本科"]
+          },
+          "degree": { "type": "string", "title": "学位", "examples": ["工学"] },
+          "primaryDiscipline": { "type": "string", "title": "一级学科分类", "examples": ["计算机科学与技术"] },
+          "startDate": { "type": "string", "title": "开始时间", "examples": ["2016-09"] },
+          "endDate": { "type": "string", "title": "结束时间", "examples": ["2020-06", "至今"] },
+          "gpa": { "type": "string", "title": "GPA", "examples": ["3.7/4.0"] },
+          "ranking": { "type": "string", "title": "学习成绩排名", "examples": ["TOP50%"] },
+          "studentCadre": { "type": "string", "title": "是否为学生干部", "enum": ["", "是", "否"] },
+          "courses": { "type": "array", "title": "主修课程", "items": { "type": "string" } },
+          "schoolExperience": { "type": "string", "title": "在校经历" },
+          "scholarships": { "type": "string", "title": "奖学金", "examples": ["国家奖学金（2018-2019）"] },
+          "lab": {
+            "type": "string",
+            "title": "实验室",
+            "description": "在校所属实验室，按实际经历填写",
+            "examples": ["智能软件工程实验室"]
+          },
+          "advisor": {
+            "type": "string",
+            "title": "导师",
+            "description": "在校导师姓名，按实际经历填写",
+            "examples": ["李四教授"]
+          },
+          "thesis": {
+            "type": "string",
+            "title": "毕设方向 / 论文题目",
+            "examples": ["基于大语言模型的代码生成与优化研究"]
+          }
+        }
+      }
+    },
+    "campusPractice": {
+      "type": "array",
+      "title": "校内实践经历",
+      "items": {
+        "type": "object",
+        "properties": {
+          "organization": {"type":"string","title":"组织／学校"},
+          "serviceHours": {"type":"string","title":"累计服务时长（小时）"},
+          "position": { "type": "string", "title": "职位名称" },
+          "startDate": { "type": "string", "title": "开始时间" },
+          "endDate": { "type": "string", "title": "结束时间" },
+          "summary": { "type": "string", "title": "工作职责" }
+        }
+      }
+    },
+    "internship": {
+      "type": "array",
+      "title": "实习经历",
+      "description": "实习与正式工作分开，国内网申常分两个区",
+      "items": {
+        "type": "object",
+        "properties": {
+          "company": { "type": "string", "title": "公司", "examples": ["美团"] },
+          "position": { "type": "string", "title": "职位", "examples": ["前端实习生"] },
+          "startDate": { "type": "string", "title": "开始时间" },
+          "endDate": { "type": "string", "title": "结束时间" },
+          "summary": { "type": "string", "title": "实习描述" },
+          "highlights": { "type": "array", "title": "实习亮点", "items": { "type": "string" } },
+          "leaveReason": { "type": "string", "title": "结束原因", "examples": ["实习结束"] },
+          "currentSalary": { "type": "string", "title": "实习补贴", "examples": ["300元/天", "5000元/月"] }
+        }
+      }
+    },
+    "work": {
+      "type": "array",
+      "title": "工作经历",
+      "description": "正式工作经历，与实习分开",
+      "items": {
+        "type": "object",
+        "properties": {
+          "company": { "type": "string", "title": "公司", "examples": ["字节跳动"] },
+          "position": { "type": "string", "title": "职位", "examples": ["前端开发工程师"] },
+          "startDate": { "type": "string", "title": "开始时间" },
+          "endDate": { "type": "string", "title": "结束时间", "examples": ["至今"] },
+          "summary": { "type": "string", "title": "工作描述" },
+          "highlights": { "type": "array", "title": "工作亮点", "items": { "type": "string" } },
+          "leaveReason": { "type": "string", "title": "离职原因", "description": "在职留空" },
+          "currentSalary": { "type": "string", "title": "目前年薪", "examples": ["25万"] }
+        }
+      }
+    },
+    "projects": {
+      "type": "array",
+      "title": "项目经历",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "项目名" },
+          "role": { "type": "string", "title": "担任角色" },
+          "startDate": { "type": "string" },
+          "endDate": { "type": "string" },
+          "description": { "type": "string", "title": "项目描述" },
+          "techStack": { "type": "array", "title": "技术栈", "items": { "type": "string" } }
+        }
+      }
+    },
+    "publications": {
+      "type": "array",
+      "title": "论文著作",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "title": "论文名称" },
+          "type": { "type": "string", "title": "论文类型" },
+          "level": { "type": "string", "title": "论文级别" },
+          "zone": { "type": "string", "title": "期刊分区" },
+          "journal": { "type": "string", "title": "发表期刊" },
+          "date": { "type": "string", "title": "发表时间", "examples": ["2026-06"] },
+          "authorOrder": { "type": "string", "title": "作者顺序" },
+          "details": { "type": "string", "title": "论文详情" }
+        },
+        "required": ["title"]
+      }
+    },
+    "skills": {
+      "type": "array",
+      "title": "技能",
+      "description": "按类别分组，每个技能带熟练程度",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "技能类别", "examples": ["编程语言", "前端框架", "数据库"] },
+          "items": {
+            "type": "array",
+            "title": "具体技能",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skill": { "type": "string", "title": "技能名", "examples": ["JavaScript", "React"] },
+                "level": {
+                  "type": "string",
+                  "title": "熟练程度",
+                  "enum": ["入门", "了解", "熟悉", "熟练", "精通", ""],
+                  "examples": ["精通"]
+                }
+              },
+              "required": ["skill"]
+            }
+          }
+        }
+      }
+    },
+    "languages": {
+      "type": "array",
+      "title": "语言能力",
+      "items": {
+        "type": "object",
+        "properties": {
+          "language": { "type": "string", "title": "语种", "examples": ["普通话", "英语"] },
+          "certificate": {"type":"string","title":"语言证书名称"},
+          "score": {"type":"string","title":"分数"},
+          "siteFluency": {"type":"string","title":"熟练程度"},
+          "fluency": { "type": "string", "title": "水平", "examples": ["一级乙等", "CET-6"] }
+        }
+      }
+    },
+    "certificates": {
+      "type": "array",
+      "title": "证书",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "证书名", "examples": ["CET-6", "机动车驾驶证 C1"] },
+          "type": {"type":"string","title":"证书类型"},
+          "number": {"type":"string","title":"证书／专利编号"},
+          "summary": {"type":"string","title":"证书完整描述"},
+          "date": { "type": "string", "title": "获取日期" },
+          "issuer": { "type": "string", "title": "颁发机构" }
+        }
+      }
+    },
+    "awards": {
+      "type": "array",
+      "title": "获奖",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "date": { "type": "string" },
+          "awarder": { "type": "string" },
+          "type": { "type": "string" },
+          "level": { "type": "string" },
+          "grade": { "type": "string" },
+          "details": { "type": "string" }
+        }
+      }
+    },
+    "patents": {
+      "type": "array",
+      "title": "个人专利",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "title": "专利名称" },
+          "number": { "type": "string", "title": "专利编号" },
+          "date": { "type": "string", "title": "发布时间" },
+          "value": { "type": "string", "title": "专业价值" }
+        }
+      }
+    },
+    "family": {
+      "type": "array",
+      "title": "家庭关系",
+      "items": {
+        "type": "object",
+        "properties": {
+          "relationship": {"type":"string","title":"与本人关系"},
+          "name": {"type":"string","title":"姓名"},
+          "birthDate": {"type":"string","title":"出生日期","format":"date"},
+          "company": {"type":"string","title":"工作单位"},
+          "position": {"type":"string","title":"职务"},
+          "politicalStatus": {"type":"string","title":"政治面貌"},
+          "education": {"type":"string","title":"教育程度"},
+          "remarks": {"type":"string","title":"备注"}
+        }
+      }
+    },
+    "interests": {
+      "type": "array",
+      "title": "兴趣爱好",
+      "items": { "type": "string" }
+    }
+  }
+}
