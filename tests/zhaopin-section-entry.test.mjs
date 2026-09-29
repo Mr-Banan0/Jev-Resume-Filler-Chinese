@@ -17,6 +17,7 @@ window.HTMLElement.prototype.getBoundingClientRect = () =>
 const listeners=[];
 window.chrome={runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessage:(_msg,cb)=>cb?.(),lastError:null}};
 window.eval(readFileSync(new URL('../content/widget-drivers.js',import.meta.url),'utf8'));
+window.eval(readFileSync(new URL('../content/platform-drivers.js',import.meta.url),'utf8'));
 window.eval(readFileSync(new URL('../content/content.js',import.meta.url),'utf8'));
 const snapshot=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
 const entries=snapshot.elements.filter(el=>el.kind==='section-entry');
@@ -53,6 +54,7 @@ ew.HTMLElement.prototype.getBoundingClientRect=()=>
 const editListeners=[];
 ew.chrome={runtime:{onMessage:{addListener:fn=>editListeners.push(fn)},sendMessage:(_msg,cb)=>cb?.(),lastError:null}};
 ew.eval(readFileSync(new URL('../content/widget-drivers.js',import.meta.url),'utf8'));
+ew.eval(readFileSync(new URL('../content/platform-drivers.js',import.meta.url),'utf8'));
 ew.eval(readFileSync(new URL('../content/content.js',import.meta.url),'utf8'));
 const editSnapshot=await new Promise(resolve=>editListeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
 const choiceHost=ew.document.createElement('div');

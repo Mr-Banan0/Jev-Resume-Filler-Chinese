@@ -2,6 +2,15 @@
 // 维护一个 elementRegistry 把 Jev 的 index 映射回真实 DOM 节点
 
 (function () {
+  // Popup 在扩展重载后用此版本识别遗留页面中的旧 content script，并主动替换。
+  const CONTENT_SCRIPT_VERSION = '2026-09-28.37';
+  const previousContentVersion = globalThis.__jevResumeFillerContentVersion;
+  if (previousContentVersion && previousContentVersion !== CONTENT_SCRIPT_VERSION) {
+    // Chrome 重载扩展时会保留页面隔离世界。释放旧实例的注册标记，让新代码
+    // 重新安装监听器；旧监听器通过下方版本校验自动静默。
+    window.__jevResumeFillerInjected = false;
+  }
+  globalThis.__jevResumeFillerContentVersion = CONTENT_SCRIPT_VERSION;
   const TAG = "[Jev Resume Filler content]";
 
   // manifest 声明式注入 + scripting.executeScript 兜底注入可能同时发生，
@@ -20,12 +29,20 @@
     stableKey: (entry, occurrence) => [entry.section, entry.context, entry.kind, entry.role, entry.label, occurrence].filter(Boolean).join('|'),
     closeOpenTransactions: null
   };
+  const platformDrivers = globalThis.JevPlatformDrivers || {
+    platformId: () => '',
+    annotateRecords: () => {},
+    closeTransactions: () => 0
+  };
 
   // 全局索引 → 元素映射（每次快照重建）
   // elementRegistry 存"被点击的节点"，elementStateRegistry 存"读状态的节点"；
   // 代理场景（隐藏 checkbox + 可见 label）下二者不同。
   let elementRegistry = [];
   let elementStateRegistry = [];
+  // 快照记录少量执行策略，例如飞书可视卡片需要完整指针序列。该元数据只在
+  // 当前快照到下一次执行之间有效，页面重扫后会随注册表一起刷新。
+  let elementMetaRegistry = [];
   let activeLayer = null;
   let sectionMarkers = [];
 
@@ -33,16 +50,77 @@
     '申请信息', '上传', '个人信息', '教育背景', '教育经历', '实习经历', '工作经历',
     '项目经验', '项目经历', '实习/工作经历', '语言能力', '获奖经历', '自我描述', '其他', '信息确认', '更新说明',
     '求职意向', '家庭情况', '投递意向', '校园活动经历', '校内实践经历', '奖励荣誉',
-    '专业技能', '其他信息', '开放性问题', '附件', '陈述情况',
+    '专业技能', '其他信息', '开放性问题', '附件', '简历附件', '陈述情况',
     '个人基本信息', '奖励活动', '社会实践经历', '所获证书', '附加信息', '家庭关系', '获奖情况',
     '英语能力', '其他外语能力', '计算机技能', '证书', '校内职务', '培训经历',
-    '其他家庭成员关系', '自我评价', '个人承诺'
+    '其他家庭成员关系', '自我评价', '个人承诺', '基本信息', '基础信息', '附件简历', '获奖', '作品', '社交账号'
   ]);
 
   // 同一控件族会部署在企业自有域名；以渲染后的表单结构识别，域名仅作早期兜底。
   function isMokaFormPage() {
     return /(^|\.)mokahr\.com$|^careers\.ey\.com\.cn$/i.test(location.hostname) ||
       !!document.querySelector('[class*="sd-Select-container-"]');
+  }
+
+  function isFeishuJobsPage() {
+    return /(^|\.)jobs\.feishu\.cn$/i.test(location.hostname);
+  }
+
+  function feishuDateRangeContainer(el) {
+    if (!isFeishuJobsPage() || !el?.matches?.('input')) return false;
+    for (let node = el.parentElement, depth = 0; node && depth < 4; node = node.parentElement, depth += 1) {
+      const inputs = node.querySelectorAll('input:not([type="hidden"])').length;
+      if (node.querySelectorAll('.atsx-date-picker-period-month-label').length === 2 && inputs <= 2) return node;
+      const text = String(node.innerText || node.textContent || '');
+      // 飞书在教育和实习记录中使用了两种包裹层：教育字段把“起止时间”
+      // 放在范围输入的直接祖先，实习字段则把它放在外层记录容器。年月占位
+      // 是两者共有的稳定结构；以它和最多两个真实输入框定位当前日期字段。
+      if (inputs <= 2 && (/起止时间/.test(text) || /YYYY\s*-\s*MM/.test(text))) return node;
+      if (inputs > 6) break;
+    }
+    return null;
+  }
+
+  function feishuComboboxHost(el) {
+    if (!isFeishuJobsPage() || !el?.matches?.('input,textarea')) return null;
+    const host = el.closest?.('[role="combobox"]');
+    return host && host !== el ? host : null;
+  }
+
+  function isFeishuDateRange(el) {
+    return !!feishuDateRangeContainer(el);
+  }
+
+  function feishuDateRangeLabel(el) {
+    const container = feishuDateRangeContainer(el);
+    const text = tidyLabel(container?.innerText || container?.textContent || '');
+    return /起止时间/.test(text) ? '起止时间' : nearestFieldCaption(el) || '起止时间';
+  }
+
+  function feishuDateRangeParts(el) {
+    const container = feishuDateRangeContainer(el);
+    const labels = Array.from(container?.querySelectorAll('.atsx-date-picker-period-month-label') || []);
+    if (labels.length !== 2) return null;
+    const values = labels.map(label => tidyLabel(label.textContent || ''));
+    return {container, labels, values};
+  }
+
+  function currentFeishuDateRangeElement(index) {
+    const previous = elementRegistry[parseInt(index, 10) - 1];
+    if (!previous) return null;
+    if (previous.isConnected && feishuDateRangeParts(previous)) return previous;
+    // 飞书选中年份或月份后可能重建整个字段；沿快照中的 data-cy 定位新节点。
+    const key = previous.closest?.('[data-cy]')?.getAttribute('data-cy');
+    const current = key && Array.from(document.querySelectorAll('[data-cy]'))
+      .find(node => node.getAttribute('data-cy') === key)
+      ?.querySelector('input.atsx-date-picker-period-hidden-input');
+    return current && feishuDateRangeParts(current) ? current : null;
+  }
+
+  function feishuDateRangeDisplay(el) {
+    const parts = feishuDateRangeParts(el);
+    if (!parts) return '';
+    return parts.values.every(value => value === 'YYYY-MM') ? '' : parts.values.join(' - ');
   }
 
   function isFieldCaption(text) {
@@ -115,6 +193,8 @@
     const isFieldChoice = el => !!el.closest('select,option,[role="option"],[role="listbox"],[role="menu"],.el-select,.el-select-dropdown,.ant-select,.ant-select-dropdown,.ant-cascader-menus');
     const known = Array.from(document.querySelectorAll('body *')).filter(el => {
       if (!isVisible(el) || isFieldChoice(el)) return false;
+      const fieldContainer = el.closest('.form-item,.el-form-item,.ant-form-item,[class*="field" i]');
+      if (fieldContainer?.querySelector('input:not([type="hidden"]),textarea,select,[role="combobox"]')) return false;
       const text = tidyLabel(el.textContent || '');
       if (!FORM_SECTION_TITLES.has(text)) return false;
       return !Array.from(el.children).some(child => tidyLabel(child.textContent || '') === text);
@@ -122,6 +202,8 @@
     // 已知标题与动态标题一起采集；同一页面常混合通用分区和 ATS 自定义分区。
     const dynamic = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,legend,[role="heading"],[class*="title" i],[class*="header" i]')).filter(el => {
       if (!isVisible(el) || isFieldChoice(el)) return false;
+      const fieldContainer = el.closest('.form-item,.el-form-item,.ant-form-item,[class*="field" i]');
+      if (fieldContainer?.querySelector('input:not([type="hidden"]),textarea,select,[role="combobox"]')) return false;
       const text = tidyLabel(el.textContent || '');
       if (text.length < 2 || text.length > 14) return false;
       if (!/(信息|经历|背景|经验|能力|技能|证书|奖项|成果|项目|实践|作品|上传|确认|意向|声明|教育|工作|实习|培训|语言|资格|家庭|校园|开放|附件)/.test(text)) return false;
@@ -176,6 +258,10 @@
   }
 
   function focusedEditorLayer() {
+    // 飞书招聘的年月范围选择器也会以固定定位的单输入层渲染。它不是独立
+    // 编辑器；将其作为 active layer 会把整张简历表单裁成一串年份和月份。
+    // 飞书的学校/专业检索层通过 popup 容器识别即可，无需依赖该全局裁剪。
+    if (isFeishuJobsPage()) return null;
     if (/(^|\.)zhiye\.com$/i.test(location.hostname)) {
       const searches=Array.from(document.querySelectorAll('input[placeholder="搜索"]')).filter(isVisible);
       for (const search of searches) {
@@ -232,6 +318,15 @@
   // 关闭状态的自定义下拉普遍这样做，只查元素自身会让里面的"男/女"变成幽灵可点控件。
   function isVisible(el) {
     if (el.hidden) return false;
+    // 飞书关闭日期面板后仍把“至今”等选项留在 DOM 中。面板已经零尺寸，
+    // 这些选项不属于当前打开的选择器，也不能作为未完成的浮层候选。
+    if (isFeishuJobsPage()) {
+      const monthPanel = el.closest?.('.atsx-date-picker-period-month-panel');
+      if (monthPanel) {
+        const panelRect = monthPanel.getBoundingClientRect();
+        if (panelRect.width === 0 || panelRect.height === 0) return false;
+      }
+    }
     const cached = visibilityCache.get(el);
     if (cached !== undefined) return cached;
 
@@ -649,25 +744,6 @@
     }
   }
 
-  function annotateBeisenRecordMetadata(items) {
-    if (!/(^|\.)zhiye\.com$/i.test(location.hostname)) return;
-    const anchors = new Map([
-      ['教育经历', /^(学校|学校名称)$/],
-      ['实习经历', /^单位名称$/],
-      ['工作经历', /^公司名称$/],
-      ['家庭情况', /^姓名$/],
-      ['获奖情况', /^奖励名称$/]
-    ]);
-    for (const [section,anchor] of anchors) {
-      let recordIndex=-1;
-      for (const {entry} of items.filter(item=>item.entry.section===section && item.entry.context!=='popup')) {
-        if (anchor.test(String(entry.label || '').replace(/\s*\*\s*$/,'').trim()) &&
-            ['input','combobox'].includes(entry.kind)) recordIndex+=1;
-        if (recordIndex>=0 && !['card','action','section-entry'].includes(entry.kind)) entry.recordIndex=recordIndex;
-      }
-    }
-  }
-
   function deriveRole(el) {
     if (el.matches('.my-button,.set-wrap')) return 'button';
     if (el.matches('.mFormRadio li')) return 'radio';
@@ -717,6 +793,8 @@
     const hasPopup = el.getAttribute("aria-haspopup");
     const isReadonly = el.hasAttribute("readonly") || el.getAttribute("aria-readonly") === "true";
     const labelText = `${el.getAttribute("placeholder") || ""} ${el.getAttribute("aria-label") || ""} ${el.getAttribute("name") || ""}`;
+    const fieldText = tidyLabel(el.closest('.form-item,.el-form-item,[class*="form-item"]')?.innerText ||
+      el.closest('.form-item,.el-form-item,[class*="form-item"]')?.textContent || '');
     const mokaSearch = /(请输入就读学校|请输入专业名称|请输入学校|请输入专业)/.test(labelText);
     const mokaHost = isMokaFormPage();
     const mokaPlaceholder = tidyLabel(el.getAttribute("placeholder") || "");
@@ -732,6 +810,15 @@
 
     if (type === "file") return "file";
     if (isEditableEl(el)) return "richtext";
+    // 飞书招聘将一组“起止时间”封装为一个可编辑范围输入。使用单一事务写入
+    // 起始与结束月份，避免把同一输入框分别绑定为两个独立日期字段。
+    if (isFeishuDateRange(el)) return 'feishu-date-range';
+    // 飞书的获奖日期有时只提供一个年份输入框（placeholder=YYYY），右侧带日历
+    // 图标。它和起止时间范围输入不同，按页面精度直接写年份，不打开无候选的日历层。
+    if (isFeishuJobsPage() && tag === 'input' && /^(?:YYYY|YYYY-MM)$/.test(mokaPlaceholder)) return 'feishu-year';
+    // 北森（zhiye.com）使用 Element UI 的只读 input 承载日期；值只能由日历提交。
+    if (/(^|\.)zhiye\.com$/i.test(location.hostname) && tag === 'input' &&
+        (el.closest('.el-date-editor') || DATE_HINT_RE.test(fieldText))) return 'beisen-date';
     if (tag==='input' && /^请选择/.test(tidyLabel(el.getAttribute('placeholder') || '')) && !DATE_HINT_RE.test(labelText))
       return 'custom-select';
     if (el.closest('.phoenix-select')) return 'custom-select';
@@ -777,6 +864,7 @@
     }
 
     if (kind === "file") return ["UPLOAD_FILE"];
+    if (kind === 'feishu-year') return ['TYPE_TEXT'];
     // 浮层容器本身不可点，条目才可点
     if (kind === "overlay") return [];
     if (kind === "layui-date" || kind === "moka-date") return ["PICK_DATE"];
@@ -815,6 +903,9 @@
   }
 
   function getValue(el, kind) {
+    // 飞书的零尺寸 input 可保留旧值，而用户可见的两个日期槽仍是 YYYY-MM。
+    // 以可见槽作为表单状态，避免把未提交的隐藏值误判为已填写。
+    if (kind === 'feishu-date-range') return feishuDateRangeDisplay(el);
     const family = widgetDrivers.classify({ kind, role: deriveRole(el), tagName: el.tagName, editable: isEditableEl(el) });
     if (widgetDrivers.readValue) {
       return widgetDrivers.readValue(el, {
@@ -905,6 +996,40 @@
     '[class*="suggest"]'
   ].join(",");
 
+  function isFeishuMonthRangeOverlay(overlay) {
+    if (!isFeishuJobsPage()) return false;
+    const text = String(overlay?.innerText || overlay?.textContent || '').replace(/\s+/g, ' ').trim();
+    // 该控件分别渲染长年份列与 01–12 月列；这些视觉选项只服务于范围日期
+    // 事务，不应该被通用下拉扫描当成语言、学历等候选。
+    const months = /(?:010203040506070809101112|123456789101112)/.test(text.replace(/\s/g, ''));
+    const years = text.match(/(?:19|20)\d{2}/g) || [];
+    return months || years.length >= 12;
+  }
+
+  // 飞书招聘站点的顶栏会常驻一个 role=menu 的“社招内推／校招内推”导航。
+  // 它不是某个表单控件打开的候选层。把这类导航从选择器事务中排除，分区
+  // 填写时就只会等待刚刚打开的真实下拉、联想或日期面板。
+  function isFeishuNavigationLayer(node) {
+    if (!isFeishuJobsPage() || !node) return false;
+    if (node.closest?.('header,nav,[role="navigation"]')) return true;
+    const navText = /^(?:社招内推|校招内推|社会招聘|校园招聘|职位搜索|首页)+$/;
+    for (let current = node, depth = 0; current && depth < 6; current = current.parentElement, depth += 1) {
+      const text = tidyLabel(current.innerText || current.textContent || '').replace(/\s+/g, '');
+      const hasFormControl = !!current.querySelector?.('input,textarea,select,[contenteditable="true"]');
+      if (!hasFormControl && navText.test(text)) return true;
+    }
+    return false;
+  }
+
+  function isInsideFeishuMonthRangePicker(node) {
+    if (!isFeishuJobsPage()) return false;
+    for (let parent = node; parent && parent !== document.body && parent !== document.documentElement;
+         parent = parent.parentElement) {
+      if (isFeishuMonthRangeOverlay(parent)) return true;
+    }
+    return false;
+  }
+
   function collectOverlayItems(seen) {
     const items = [];
     const numericLabels = new Set();
@@ -918,9 +1043,11 @@
     overlays.forEach((overlay) => {
       if (overlay === document.body || overlay === document.documentElement) return;
       if (activeLayer && overlay !== activeLayer && !activeLayer.contains(overlay)) return;
+      if (isFeishuNavigationLayer(overlay)) return;
       if (!isVisible(overlay)) return;
       const r = overlay.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) return;
+      if (isFeishuMonthRangeOverlay(overlay)) return;
 
       let candidates;
       try {
@@ -938,11 +1065,18 @@
         if (seen.has(el)) return;
         const calendarCell = el.closest('td');
         if (calendarCell && el !== calendarCell) return;
+        if (isInsideFeishuMonthRangePicker(el)) return;
+        // 已选的“至今”显示在日期输入框内部；它是字段值，不是打开的候选项。
+        if (isFeishuJobsPage() && el.closest('.atsx-date-picker-period-month-label')) return;
         // 只取最内层可点条目：自身不再包含其它候选条目
         if (!calendarCell && el.querySelector(OVERLAY_ITEM_SELECTOR)) return;
         if (!isVisible(el)) return;
         const ownText = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
         if (!ownText || ownText.length > 60) return;
+        // 飞书年月范围选择器的列项有时被拆成独立浮层，父容器不再同时拥有
+        // 年份与月份。浮层里的纯数字只在该日期组件中出现，保持在组件内部，
+        // 不交给通用选项匹配器。
+        if (isFeishuJobsPage() && /^\d{1,4}$/.test(ownText)) return;
         // 同一个虚拟下拉可能同时保留两份渲染列表。年份/月数字项按文本去重，
         // 让目标年份能在单次快照的元素预算内出现。
         if (/^\d{1,4}$/.test(ownText) && !el.closest('td')) {
@@ -1033,6 +1167,8 @@
     '[role="tree"]',
     '[role="grid"]',
     '[role="treegrid"]'
+    ,'[class*="dropdown"]'
+    ,'.searchInputComponent'
     ,'.el-picker-panel'
     ,'.ant-calendar'
     ,'.ant-picker-dropdown'
@@ -1042,6 +1178,7 @@
 
   function inPopupContainer(el) {
     try {
+      if (isFeishuNavigationLayer(el)) return false;
       return !!el.closest(POPUP_CONTAINER_SELECTOR);
     } catch (_) {
       return false;
@@ -1144,6 +1281,13 @@
       for (const el of all) {
         if (seen.has(el)) continue;
         if (el.closest('.el-picker-panel td')) continue;
+        // 飞书的选择控件把可见的“请选择／当前值”包在 role=combobox 内。
+        // 它已经由控件采集器提供统一的 custom-select 条目；不再把内部展示层
+        // 额外收为卡片，后续的“添加语言／项目／获奖”入口就不会被这些重复项挤出预算。
+        if (isFeishuJobsPage() && el.closest('[role="combobox"]')) continue;
+        const feishuFormItem = isFeishuJobsPage() && el.closest('.atsx-form-item');
+        if (feishuFormItem && !/^(?:\+\s*)?(?:添加|新增)(?:新的)?$/.test((el.innerText || el.textContent || '').trim()) &&
+            feishuFormItem.querySelector('input,textarea,[role="combobox"]')) continue;
         const r = el.getBoundingClientRect();
         let cs;
         try {
@@ -1161,7 +1305,7 @@
             (allowWeak && ENTRY_KEYWORD_RE.test(text) ||
               /(?:教育|工作|实习|项目|校园|语言|技能|奖励|荣誉|附件|个人信息|求职意向).{0,16}(?:添加|新增|编辑|完善|填写|未完成)/.test(text) ||
               /^(?:\+\s*)?(?:添加|新增)(?:新的)?$/.test(text) &&
-                /(?:教育|工作|实习|项目|语言|奖励|荣誉|家庭)/.test(el.parentElement?.textContent || '')),
+                /(?:教育|工作|实习|项目|语言|奖励|荣誉|获奖|家庭|自我评价|自我描述)/.test(el.parentElement?.textContent || '')),
           hidden: !isVisible(el),
           text,
           width: r.width,
@@ -1172,8 +1316,8 @@
         candidates.push({el,text});
       }
     }
-    const priority = ({text}) => /^(?:\+\s*)?(?:添加|新增)(?:新的)?(?:教育|实习|工作|项目|语言|奖励|获奖|家庭)/.test(text) ? 3 :
-      /(?:教育|工作|实习|项目|校园|语言|技能|奖励|荣誉|附件|个人信息|求职意向).{0,16}(?:添加|新增|编辑|完善|填写|未完成)/.test(text) ? 2 : 1;
+    const priority = ({text}) => /^(?:\+\s*)?(?:添加|新增)(?:新的)?(?:教育|实习|工作|项目|语言|奖励|获奖|家庭|自我评价|自我描述)/.test(text) ? 3 :
+      /(?:教育|工作|实习|项目|校园|语言|技能|奖励|荣誉|获奖|附件|个人信息|求职意向|自我评价|自我描述).{0,16}(?:添加|新增|编辑|完善|填写|未完成)/.test(text) ? 2 : 1;
     candidates.sort((left,right) => priority(right)-priority(left));
     const chosen = [];
     for (const {el} of candidates) {
@@ -1194,7 +1338,9 @@
     let domOrder = 0;
     elementRegistry = [];
     elementStateRegistry = [];
+    elementMetaRegistry = [];
     const seen = new Set();
+    const feishuRangeContainers = new Set();
     hiddenFiltered = 0;
     zeroSizeFiltered = 0;
     visibilityCache = new Map();
@@ -1231,6 +1377,10 @@
       });
       const section = opts.section || sectionForElement(targetEl || stateEl);
       if (section) entry.section = section;
+      // 飞书的自我评价 textarea 常只有通用占位“请输入”，字段标题位于分区头部。
+      // 该分区仅承载这一项文本，因此使用分区标题恢复稳定字段语义。
+      if (isFeishuJobsPage() && /^(?:请输入|请填写)$/.test(String(entry.label || '').trim()) &&
+          /^(?:自我评价|自我描述)$/.test(section || '')) entry.label = section;
       const dateSlot = localDateSlot(stateEl);
       if (dateSlot !== null) entry.dateSlot = dateSlot;
       let mokaRequired = false;
@@ -1249,7 +1399,8 @@
         for (let node = stateEl.parentElement, depth = 0; node && depth < 4; node = node.parentElement, depth += 1) {
           if (node.querySelectorAll('input:not([type="hidden"]),textarea,select').length > 3) break;
           const captions = Array.from(node.children).filter(child => !child.contains(stateEl));
-          if (captions.some(child => /^(?:\*|＊)$/.test(tidyLabel(child.textContent || '')) ||
+          if (captions.some(child => /(?:^\s*[*＊]|[*＊]\s*$)/.test(String(child.innerText || child.textContent || '')) ||
+              /^(?:\*|＊)$/.test(tidyLabel(child.textContent || '')) ||
               child.matches('.is-required,[class*="required"],[class*="bitian"]') ||
               child.querySelector('.ant-form-item-required,.is-required,[aria-required="true"]'))) {
             localRequired = true;
@@ -1373,12 +1524,45 @@
           seen.add(el);
           return;
         }
+        // 飞书的学校检索器把真正可写的 input 套在 role=combobox 容器里。
+        // 采集内层输入框即可形成“填写关键词 → 选择结果”的单一事务。
+        if (isFeishuJobsPage() && el.matches?.('[role="combobox"]')) {
+          // 飞书经常在 combobox 中保留一个零尺寸的 React 状态 input；它并不是
+          // 用户可操作的输入框。只有内层确实可见且有尺寸时，才由内层输入承接
+          // 扫描；否则保留 combobox 本身，作为学历、语言等选择器的点击目标。
+          const visibleEditor = Array.from(el.querySelectorAll('input:not([type="hidden"]),textarea'))
+            .find(node => {
+              if (!isVisible(node)) return false;
+              const rect = node.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            });
+          if (visibleEditor) {
+            seen.add(el);
+            return;
+          }
+        }
         if (el.matches('input[type="file"]')) {
           seen.add(el);
           const label = fileFieldLabel(el);
           pushEntry(el, {
             role: 'button', kind: 'file', targetEl: el, label, value: fileFieldValue(el),
             operations: ['UPLOAD_FILE'], offscreen: false
+          });
+          return;
+        }
+        // 飞书招聘的月份范围输入本身尺寸为 0，却仍由 React 表单承载真实值和
+        // 事件。保留该 input 作为执行目标，页面显示的年/月节点仅作视觉层。
+        const feishuRange = feishuDateRangeContainer(el);
+        if (feishuRange) {
+          seen.add(el);
+          if (feishuRangeContainers.has(feishuRange)) return;
+          feishuRangeContainers.add(feishuRange);
+          const rangeRect = feishuRange.getBoundingClientRect();
+          pushEntry(el, {
+            role:'textbox', kind:'feishu-date-range', targetEl:el,
+            label:feishuDateRangeLabel(el), value:getValue(el, 'feishu-date-range'),
+            operations:['TYPE_TEXT'],
+            offscreen:!inViewport(rangeRect, vw, vh)
           });
           return;
         }
@@ -1399,19 +1583,24 @@
         const offscreen = !inViewport(r, vw, vh);
 
         const role = deriveRole(el);
-        const kind = deriveKind(el, role);
+        let kind = deriveKind(el, role);
+        const feishuHost = feishuComboboxHost(el);
+        const label = feishuHost ? deriveLabel(feishuHost) || deriveLabel(el) : deriveLabel(el);
+        // 360/北森的年月控件与普通下拉共享 DOM 外形，字段标题才是稳定语义。
+        if (/(^|\.)zhiye\.com$/i.test(location.hostname) && kind === 'custom-select' &&
+            DATE_HINT_RE.test(label)) kind = 'beisen-date';
         const phoenixTarget = kind === 'custom-select' ? el.closest('.phoenix-select') : null;
         const disabled = el.disabled === true || el.getAttribute("aria-disabled") === "true";
         // 浮层里的选项无论走哪条采集路径，都要带上 popup 标记：
         // 它对 Jev 是"点了就消失，要立刻做决定"的信号。
-        const isPopupItem = (["option", "menuitem", "radio", "checkbox", "textbox"].includes(role) ||
+        const isPopupItem = !isFeishuNavigationLayer(el) && (["option", "menuitem", "radio", "checkbox", "textbox"].includes(role) ||
           role === 'button' && (!!el.closest('.el-picker-panel') || !!activeLayer?.contains(el))) &&
           (inPopupContainer(el) || !!activeLayer?.contains(el));
         pushEntry(el, {
           role,
           kind,
           targetEl:phoenixTarget || (kind === 'section-entry' ? el.querySelector('.add-btn') || el : el),
-          label: deriveLabel(el),
+          label,
           value: getValue(el, kind),
           // 禁用的控件不给出任何操作，避免 Jev 选到一个点不动的目标
           operations: disabled ? [] : deriveOperations(role, el, kind),
@@ -1498,7 +1687,7 @@
       (a.entry.domOrder ?? 0) - (b.entry.domOrder ?? 0));
     annotateMokaRecordMetadata(allEntriesInDomOrder);
     annotateRepeatedContainers(allEntriesInDomOrder);
-    annotateBeisenRecordMetadata(allEntriesInDomOrder);
+    platformDrivers.annotateRecords(allEntriesInDomOrder, location.hostname, document);
     const dateLabels = {
       '教育背景':['入学年份','入学月份','毕业年份','毕业月份'],
       '教育经历':['入学年份','入学月份','毕业年份','毕业月份'],
@@ -1553,6 +1742,7 @@
       // 注册的是"点击目标"：代理场景下是那个可见的 label，点它原生就会转发给隐藏的 input
       elementRegistry.push(targetEl);
       elementStateRegistry.push(stateEl);
+      elementMetaRegistry.push(entry);
     }
 
     return out;
@@ -1707,6 +1897,190 @@
     }
   }
 
+  // 飞书的“卡片”快照可能覆盖一整条记录，而真实处理器只绑定在字段右侧的
+  // combobox 或“添加”文字上。按字段标题收敛到最小可交互后代，才能把浏览器
+  // 层的真实指针点击落在用户实际会点击的位置。
+  function feishuCardPointerTarget(el, rawLabel = '', fieldLabel = '') {
+    if (!el) return null;
+    const raw = tidyLabel(rawLabel);
+    const normalizedLabel = tidyLabel(fieldLabel || rawLabel).replace(/^添加(?:新的)?/, '');
+    const visibleNodes = Array.from(el.querySelectorAll?.('*') || []).filter(isVisible);
+    const ownText = node => tidyLabel(Array.from(node.childNodes || [])
+      .filter(child => child.nodeType === Node.TEXT_NODE).map(child => child.textContent).join(' '));
+    const narrowest = nodes => nodes.sort((left, right) =>
+      left.querySelectorAll('*').length - right.querySelectorAll('*').length)[0] || null;
+    if (/^(?:添加|新增)/.test(raw || normalizedLabel)) {
+      const action = narrowest(visibleNodes.filter(node => /^(?:添加|新增)$/.test(ownText(node)) ||
+        /^(?:添加|新增)$/.test(tidyLabel(node.innerText || node.textContent || ''))));
+      if (action) return action;
+    }
+    // 可视选择卡片通常只显示“请选择”。平台层会把它的快照标签恢复成
+    // “学历／语言”等字段名；真实指针必须命中这个值槽，而不是左侧标题。
+    const unselected = narrowest([el, ...visibleNodes].filter(node =>
+      /^(?:请选择|请输入|未填|请选择.+)$/.test(tidyLabel(node.innerText || node.textContent || ''))));
+    if (unselected) return unselected;
+    const rawText = narrowest([el, ...visibleNodes].filter(node =>
+      raw && (ownText(node) === raw || tidyLabel(node.innerText || node.textContent || '') === raw)));
+    if (rawText) return rawText;
+    const captions = [el, ...visibleNodes].filter(node =>
+      tidyLabel(node.innerText || node.textContent || '') === normalizedLabel);
+    for (const caption of captions) {
+      for (let field = caption.parentElement, depth = 0;
+        field && depth < 4 && (field === el || el.contains(field)); field = field.parentElement, depth += 1) {
+        const controls = Array.from(field.querySelectorAll(
+          '[role="combobox"],input:not([type="hidden"]),textarea,select,button,[tabindex]:not([tabindex="-1"])'
+        )).filter(node => node !== caption && isVisible(node) && node.getBoundingClientRect().width > 0);
+        if (controls.length) {
+          const captionRect = caption.getBoundingClientRect();
+          return controls.sort((left, right) => {
+            const leftRect = left.getBoundingClientRect();
+            const rightRect = right.getBoundingClientRect();
+            const leftDistance = Math.abs(leftRect.top - captionRect.bottom) + Math.abs(leftRect.left - captionRect.left) / 8;
+            const rightDistance = Math.abs(rightRect.top - captionRect.bottom) + Math.abs(rightRect.left - captionRect.left) / 8;
+            return leftDistance - rightDistance;
+          })[0];
+        }
+      }
+    }
+    if (el.matches?.('[role="combobox"],input,textarea,select,button,[tabindex]:not([tabindex="-1"])')) return el;
+    if (!document.elementFromPoint) return el;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) return el;
+    const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return hit && (el.contains(hit) || hit.contains(el)) ? hit : el;
+  }
+
+  function trustedClickPoint(index) {
+    const pos = parseInt(index, 10) - 1;
+    const el = elementRegistry[pos];
+    const meta = elementMetaRegistry[pos] || {};
+    if (!el) return {ok:false,reason:`元素 ${index} 不在注册表`};
+    if (!isFeishuJobsPage() || meta.clickMode !== 'trusted-pointer') {
+      return {ok:false,reason:'当前控件不需要真实指针点击'};
+    }
+    safeScrollIntoView(el);
+    const clickTarget = feishuCardPointerTarget(el, meta.clickLabel || meta.label, meta.label);
+    safeScrollIntoView(clickTarget);
+    const rect = clickTarget?.getBoundingClientRect?.();
+    if (!rect.width || !rect.height || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) {
+      return {ok:false,reason:'飞书卡片未处于可点击布局'};
+    }
+    return {
+      ok:true,
+      clickMode:'trusted-pointer',
+      point:{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2},
+      label:meta.label || tidyLabel(clickTarget?.textContent || '')
+    };
+  }
+
+  function feishuYearTarget(index) {
+    const pos = parseInt(index, 10) - 1;
+    const el = elementRegistry[pos];
+    if (!el) return {ok:false,reason:`元素 ${index} 不在注册表`};
+    if (!isFeishuJobsPage() || deriveKind(el, deriveRole(el)) !== 'feishu-year') {
+      return {ok:false,reason:'当前控件不需要飞书年份选择器'};
+    }
+    safeScrollIntoView(el);
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) {
+      return {ok:false,reason:'飞书年份框未处于可选择布局'};
+    }
+    return {
+      ok:true,
+      inputMode:'feishu-year-picker',
+      point:{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2},
+      label:deriveLabel(el)
+    };
+  }
+
+  function feishuYearChoicePoint(index, year) {
+    const pos = parseInt(index, 10) - 1;
+    const el = elementRegistry[pos];
+    const expected = String(year || '').trim();
+    if (!el) return {ok:false,reason:`元素 ${index} 不在注册表`};
+    if (!isFeishuJobsPage() || deriveKind(el, deriveRole(el)) !== 'feishu-year' || !/^\d{4}$/.test(expected)) {
+      return {ok:false,reason:'当前控件不支持飞书年份网格选择'};
+    }
+    // 年份面板通过 portal 在输入框点击后才由 hidden 切换到可见。快照阶段会缓存
+    // 关闭态的可见性，选择阶段必须重新计算，才能识别刚展开的网格条目。
+    visibilityCache = new Map();
+    const candidates = Array.from(document.querySelectorAll('body *')).filter(node => {
+      if (!isVisible(node) || tidyLabel(node.innerText || node.textContent || '') !== expected) return false;
+      if (node === el || node.contains(el) || el.contains(node)) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+    const choice = candidates.sort((left, right) => {
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      const leftChildren = left.querySelectorAll('*').length;
+      const rightChildren = right.querySelectorAll('*').length;
+      if (leftChildren !== rightChildren) return leftChildren - rightChildren;
+      return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+    })[0];
+    const rect = choice?.getBoundingClientRect?.();
+    if (!rect?.width || !rect?.height) return {ok:false,reason:`飞书年份网格中未找到 ${expected}`};
+    return {
+      ok:true,
+      selectionMode:'feishu-year-picker',
+      point:{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2},
+      label:expected
+    };
+  }
+
+  function feishuRangeState(index) {
+    const el = currentFeishuDateRangeElement(index);
+    const parts = el && feishuDateRangeParts(el);
+    if (!parts) return {ok:false,reason:'飞书日期范围的可见起止槽未找到'};
+    return {ok:true,values:parts.values};
+  }
+
+  function feishuRangeSlotPoint(index, slot) {
+    const el = currentFeishuDateRangeElement(index);
+    const parts = el && feishuDateRangeParts(el);
+    const target = parts?.labels?.[Number(slot)];
+    if (!target || ![0,1].includes(Number(slot))) {
+      return {ok:false,reason:'飞书日期范围的目标槽未找到'};
+    }
+    safeScrollIntoView(target);
+    const rect = target.getBoundingClientRect();
+    if (!rect.width || !rect.height) return {ok:false,reason:'飞书日期槽没有可点击尺寸'};
+    return {ok:true,point:{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2}};
+  }
+
+  function feishuRangeChoicePoint(index, slot, axis, value) {
+    const el = currentFeishuDateRangeElement(index);
+    const parts = el && feishuDateRangeParts(el);
+    if (!parts) return {ok:false,reason:'飞书日期范围目标已变化'};
+    if (!['year','month'].includes(axis)) return {ok:false,reason:'飞书日期选择列无效'};
+    visibilityCache = new Map();
+    const panels = Array.from(document.querySelectorAll('.atsx-date-picker-period-month-panel'))
+      .filter(panel => isVisible(panel) && panel.getBoundingClientRect().width > 0 && panel.getBoundingClientRect().height > 0);
+    const wanted = String(value).trim();
+    const slotRect = parts.labels[Number(slot)]?.getBoundingClientRect();
+    const rankedPanels = panels.map(panel => {
+      const rect = panel.getBoundingClientRect();
+      return {panel,distance:slotRect ? Math.abs(rect.left + rect.width / 2 - (slotRect.left + slotRect.width / 2)) +
+        Math.abs(rect.top + rect.height / 2 - (slotRect.top + slotRect.height / 2)) : 0};
+    }).sort((a,b) => a.distance - b.distance);
+    let choice = null;
+    let diagnostics = '';
+    for (const {panel} of rankedPanels) {
+      const lists = Array.from(panel.querySelectorAll('.atsx-date-picker-period-month-panel-list'));
+      const list = lists[axis === 'year' ? 0 : 1];
+      const options = Array.from(list?.querySelectorAll('.atsx-date-picker-period-month-panel-list-item') || []);
+      diagnostics += `${lists.length}列:${options.slice(0,8).map(node => tidyLabel(node.textContent || '')).join('/') || '空'};`;
+      choice = options.find(node => tidyLabel(node.textContent || '') === wanted &&
+        !/disabled/.test(String(node.className || '')) && node.getAttribute('aria-disabled') !== 'true');
+      if (choice) break;
+    }
+    if (!choice) return {ok:false,reason:`飞书日期选择器中未找到 ${wanted}（面板 ${panels.length}，${diagnostics || '无候选'}）`};
+    safeScrollIntoView(choice);
+    const rect = choice.getBoundingClientRect();
+    if (!rect.width || !rect.height) return {ok:false,reason:`飞书日期选项 ${wanted} 没有可点击尺寸`};
+    return {ok:true,point:{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2}};
+  }
+
   // === 执行 click ===
   async function executeClick(index) {
     const pos = parseInt(index, 10) - 1;
@@ -1714,6 +2088,7 @@
     if (!el) return { ok: false, reason: `元素 ${index} 不在注册表` };
     // 代理场景：点的是可见 label，状态藏在隐藏的 input 里
     const stateEl = elementStateRegistry[pos] || el;
+    const meta = elementMetaRegistry[pos] || {};
     const wasChecked = stateEl.checked;
     if (el.disabled || el.getAttribute("aria-disabled") === "true") {
       return { ok: false, reason: `元素 ${index} 已禁用` };
@@ -1825,7 +2200,11 @@
         if (hit && row.contains(hit) && hit !== el) beisenChoiceTarget = hit;
       }
     }
-    const clickTarget = mokaClearTarget || beisenChoiceTarget || leafTarget || el;
+    // 飞书卡片在真实指针通道不可用时仍保留一个普通 DOM 回退目标，以便页面
+    // 本身允许程序化 click 的构建可以继续完成填写。
+    const feishuHitTarget = isFeishuJobsPage() && meta.clickMode === 'trusted-pointer'
+      ? feishuCardPointerTarget(el, meta.clickLabel || meta.label, meta.label) : null;
+    const clickTarget = mokaClearTarget || beisenChoiceTarget || leafTarget || feishuHitTarget || el;
     const r = clickTarget.getBoundingClientRect();
     if (!notOccluded(clickTarget, r)) {
       // 不强制失败，因为元素可能合法地被父级覆盖；记录但继续
@@ -1860,7 +2239,11 @@
     };
     // 北森的单选行由 click 事件切换；额外的 down/up 会让同一次选择
     // 被组件处理两次，最终回到未选状态。
-    if (!mokaClearTarget && !beisenChoiceTarget && !clickTarget.matches?.('.phoenix-select input')) {
+    // 飞书下拉由一次原生 click 打开；真实指针通道由后台执行，普通回退点击
+    // 保持单击，避免把选择层刚打开又关闭。
+    const feishuSingleClick = isFeishuJobsPage();
+    if (!mokaClearTarget && !beisenChoiceTarget &&
+        !feishuSingleClick && !clickTarget.matches?.('.phoenix-select input')) {
       try {
         clickTarget.dispatchEvent(new PointerEvent("pointerdown", opts));
         clickTarget.dispatchEvent(new MouseEvent("mousedown", opts));
@@ -2063,9 +2446,143 @@
       : {ok:false,reason:`Moka 日期未被表单接受：${el.value || '空白'}`,expected:normalized};
   }
 
+  async function executeBeisenDate(el, index, value) {
+    const match = String(value).match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
+    if (!match) return {ok:false,dataGap:true,reason:'日期需要年月或年月日'};
+    const [, rawYear, rawMonth, rawDay] = match;
+    const targetYear = Number(rawYear);
+    const targetMonth = Number(rawMonth);
+    const targetDay = rawDay ? Number(rawDay) : 1;
+    const expectedPrefix = `${rawYear}-${String(targetMonth).padStart(2, '0')}`;
+    const panel = () => {
+      // 北森当前页面的日历没有 Element UI 类名，但可见面板始终同时含有
+      // “YYYY年”按钮、“M月”按钮与日期表格。先用这三个结构特征锁定最小公共容器。
+      const visibleTables = Array.from(document.querySelectorAll('table')).filter(isVisible);
+      const headerButtons = Array.from(document.querySelectorAll('button')).filter(isVisible);
+      // 有些北森主题用 CSS 伪元素绘制“年／月”，DOM 仅保留数字。
+      const isYearHeader = text => /^\d{4}(?:年)?$/.test(text);
+      const isMonthHeader = text => /^(?:[1-9]|1[0-2])(?:月)?$/.test(text);
+      const yearButton = headerButtons.find(button => isYearHeader(tidyLabel(button.innerText || button.textContent || '')));
+      const monthButton = headerButtons.find(button => isMonthHeader(tidyLabel(button.innerText || button.textContent || '')));
+      if (yearButton && monthButton) {
+        for (let node = yearButton.parentElement, depth = 0; node && depth < 8; node = node.parentElement, depth += 1) {
+          if (isVisible(node) && node.contains(monthButton) && visibleTables.some(table => node.contains(table))) return node;
+        }
+      }
+      const named = Array.from(document.querySelectorAll(
+        '.el-date-picker,.el-picker-panel,.ant-calendar,.ant-picker-dropdown,[class*="calendar" i],[class*="date-picker" i]'
+      )).find(node => isVisible(node) && node.querySelector('table'));
+      if (named) return named;
+      // 北森旧页面的日历没有稳定类名。以可见表格为锚点，向上找到同时包含
+      // 年、月导航的最小容器，避免把整页 body 误当作日历。
+      for (const table of Array.from(document.querySelectorAll('table')).filter(isVisible)) {
+        for (let node = table.parentElement, depth = 0; node && depth < 7; node = node.parentElement, depth += 1) {
+          if (!isVisible(node)) continue;
+          const labels = Array.from(node.querySelectorAll('button,a,span')).map(item => tidyLabel(item.innerText || item.textContent || ''));
+          if (labels.some(text => /^\d{4}(?:年)?$/.test(text)) &&
+              labels.some(text => /^(?:[1-9]|1[0-2])(?:月)?$/.test(text))) return node;
+        }
+      }
+      return null;
+    };
+    // Element UI 的日期输入框是开关式触发器。一次用户点击会打开面板；此前对
+    // input 和包装层连续派发多次 click，会把刚打开的面板再次关闭。
+    const trigger = el.closest('.el-date-editor,.el-input,[class*="date"]') || el.parentElement || el;
+    const open = async node => {
+      node?.focus?.({preventScroll:true});
+      node?.click?.();
+      await sleep(100);
+      return panel();
+    };
+    let picker = await open(el);
+    if (!picker && trigger !== el) picker = await open(trigger);
+    if (!picker) return {ok:false,reason:'北森日期面板未打开'};
+    const readMonth = () => {
+      const labels = Array.from(picker.querySelectorAll('.el-date-picker__header-label,button,span'))
+        .map(node => tidyLabel(node.innerText || node.textContent || ''));
+      let year = labels.map(text => text.match(/(\d{4})/)).find(Boolean)?.[1];
+      let month = labels.map(text => text.match(/^(\d{1,2})(?:\s*月)?$/)).find(Boolean)?.[1];
+      const combinedHeader = labels.map(text => text.match(/(\d{4})\s*年?\s*(\d{1,2})\s*月?/)).find(Boolean);
+      if (combinedHeader) {
+        year ||= combinedHeader[1];
+        month ||= combinedHeader[2];
+      }
+      // 主题层级可能把标题按钮放在 picker 的兄弟节点；全局可见标题是同一时刻
+      // 唯一的四位年份和 1–12 月份，作为可靠的结构回读。
+      if (!year || !month) {
+        const globalLabels = Array.from(document.querySelectorAll('button')).filter(isVisible)
+          .map(node => tidyLabel(node.innerText || node.textContent || ''));
+        year ||= globalLabels.map(text => text.match(/(\d{4})/)).find(Boolean)?.[1];
+        month ||= globalLabels.map(text => text.match(/^(?:[1-9]|1[0-2])(?:\s*月)?$/)).find(Boolean)?.[1];
+        const globalCombined = globalLabels.map(text => text.match(/(\d{4})\s*年?\s*(\d{1,2})\s*月?/)).find(Boolean);
+        if (globalCombined) {
+          year ||= globalCombined[1];
+          month ||= globalCombined[2];
+        }
+      }
+      return {year:Number(year), month:Number(month), labels};
+    };
+    const navigation = direction => {
+      const icon = direction < 0 ? 'el-icon-arrow-left' : 'el-icon-arrow-right';
+      const byClass = direction < 0 ? /(?:prev|previous|left)/i : /(?:next|right)/i;
+      const semanticText = direction < 0 ? /(?:上一|上个|previous|prev|left)/i : /(?:下一|下个|next|right)/i;
+      const clickables = Array.from(picker.querySelectorAll('button,a,[role="button"]')).filter(isVisible);
+      const iconNode = Array.from(picker.querySelectorAll(`.${icon}`)).find(isVisible);
+      return iconNode?.closest?.('button,a,[role="button"]') ||
+        clickables.find(button =>
+        button.classList.contains(icon) && isVisible(button)) ||
+        Array.from(picker.querySelectorAll(direction < 0 ? '.el-date-picker__prev-btn' : '.el-date-picker__next-btn'))
+          .find(button => !/d-arrow/.test(String(button.className || ''))) ||
+        clickables.find(button =>
+          isVisible(button) && byClass.test(String(button.className || '')) &&
+          !/(?:year|double|d-arrow)/i.test(String(button.className || ''))) ||
+        clickables.find(button => semanticText.test([
+          button.getAttribute('aria-label'), button.getAttribute('title'), button.getAttribute('data-action'),
+          button.innerText, button.textContent
+        ].filter(Boolean).join(' ')));
+    };
+    for (let tries = 0; tries < 180; tries += 1) {
+      const current = readMonth();
+      if (current.year === targetYear && current.month === targetMonth) break;
+      if (!current.year || !current.month) {
+        return {ok:false,reason:`北森日期面板月份无法读取（${current.labels.filter(Boolean).slice(0,12).join(' / ') || '无标题'}）`};
+      }
+      const delta = (targetYear - current.year) * 12 + targetMonth - current.month;
+      const nav = navigation(delta < 0 ? -1 : 1);
+      if (!nav) return {ok:false,reason:'北森日期月份导航不可用'};
+      nav.click();
+      await sleep(25);
+      picker = panel();
+      if (!picker) return {ok:false,reason:'北森日期面板在导航时关闭'};
+    }
+    const current = readMonth();
+    if (current.year !== targetYear || current.month !== targetMonth) {
+      return {ok:false,reason:`北森日期未导航到目标月份：${current.year || '?'}-${current.month || '?'}`,expected:expectedPrefix};
+    }
+    const monthCells = Array.from(picker.querySelectorAll('.el-month-table td,.ant-calendar-month-panel-cell,[class*="month-table" i] td'));
+    const dayCells = Array.from(picker.querySelectorAll('.el-date-table td,.ant-calendar-table td,table td'));
+    const targetCells = monthCells.length ? monthCells : dayCells;
+    const targetNumber = monthCells.length ? targetMonth : targetDay;
+    const dateCell = targetCells.find(cell =>
+      !/(?:prev|last|next)[-_ ]?month|disabled/i.test(String(cell.className || '')) &&
+      Number(tidyLabel(cell.textContent || '')) === targetNumber);
+    if (!dateCell) return {ok:false,reason:monthCells.length ? '北森月份网格无法定位目标月' : '北森日期网格无法定位目标日',expected:expectedPrefix};
+    dateCell.click();
+    await sleep(80);
+    const actual = String(el.value || '').trim();
+    return actual.startsWith(expectedPrefix) ? {ok:true,action:'pick_date',index,value:actual,verified:true} :
+      {ok:false,reason:`北森日期回读不一致：${actual || '空白'}`,expected:expectedPrefix};
+  }
+
   async function executeDatePicker(index, value) {
     const el = elementRegistry[parseInt(index, 10) - 1];
-    if (!el || !el.matches('input[readonly]')) return {ok:false,reason:'日期控件已变化'};
+    if (!el || !el.matches('input')) return {ok:false,reason:'日期控件已变化'};
+    if (/(^|\.)zhiye\.com$/i.test(location.hostname) &&
+        (el.closest('.el-date-editor') || DATE_HINT_RE.test(deriveLabel(el)) ||
+          DATE_HINT_RE.test(tidyLabel(el.closest('.form-item,.el-form-item,[class*="form-item"]')?.innerText || '')))) {
+      return executeBeisenDate(el,index,value);
+    }
+    if (!el.matches('input[readonly]')) return {ok:false,reason:'日期控件已变化'};
     if (isMokaFormPage() &&
         /日期（年月日）|日期\(年月日\)/.test(String(el.getAttribute('placeholder') || ''))) {
       return executeMokaDate(el,index,value);
@@ -2193,6 +2710,51 @@
     el.dispatchEvent(new FocusEvent('focusout', { bubbles:true, relatedTarget:null }));
   }
 
+  async function setFeishuYearValue(el, value) {
+    const target = String(value).trim();
+    // 飞书的年份输入框由受控组件维护。浏览器原生插入命令会经过其完整的编辑
+    // 管线，因此先选中旧值并用这一条路径提交年份。
+    if (typeof el.select === 'function') el.select();
+    let inserted = false;
+    try {
+      inserted = document.execCommand('insertText', false, target);
+    } catch (_) {
+      inserted = false;
+    }
+    if ((inserted || String(el.value || '') === target) && String(el.value || '') === target) {
+      el.dispatchEvent(new Event('change', { bubbles:true }));
+      el.blur?.();
+      el.dispatchEvent(new FocusEvent('focusout', { bubbles:true, relatedTarget:null }));
+      return;
+    }
+
+    const proto = HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    let typed = '';
+
+    // 飞书的单年份框在 React 状态更新时按字符处理输入。逐位提交可以让它完成
+    // 自己的格式校验并保留受控状态，不会把整段年份视为一次无效的批量写入。
+    for (const char of target) {
+      typed += char;
+      const previousValue = String(el.value || '');
+      el.dispatchEvent(new KeyboardEvent('keydown', { bubbles:true, key:char }));
+      el.dispatchEvent(new InputEvent('beforeinput', {
+        bubbles:true, cancelable:true, inputType:'insertText', data:char
+      }));
+      if (setter) setter.call(el, typed);
+      else el.value = typed;
+      if (el._valueTracker && typeof el._valueTracker.setValue === 'function') {
+        el._valueTracker.setValue(previousValue);
+      }
+      el.dispatchEvent(new InputEvent('input', { bubbles:true, inputType:'insertText', data:char }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { bubbles:true, key:char }));
+      await sleep(80);
+    }
+    el.dispatchEvent(new Event('change', { bubbles:true }));
+    el.blur?.();
+    el.dispatchEvent(new FocusEvent('focusout', { bubbles:true, relatedTarget:null }));
+  }
+
   function getCurrentValue(el) {
     if (isEditableEl(el)) return editableText(el);
     return el.value;
@@ -2233,10 +2795,13 @@
     const norm = normalizeForInputType(el, value);
     if (norm.error) return { ok: false, dataGap: true, reason: norm.error };
     const target = norm.value;
+    const isFeishuYear = deriveKind(el, deriveRole(el)) === 'feishu-year';
+    const settleMs = isFeishuYear ? 350 : 50;
+    const write = () => isFeishuYear ? setFeishuYearValue(el, target) : setValueWithEvents(el, target);
 
     // 第一次尝试
-    await setValueWithEvents(el, target);
-    await sleep(50);
+    await write();
+    await sleep(settleMs);
     const actual1 = getCurrentValue(el);
     if (actual1 === target) {
       el.blur?.();
@@ -2250,15 +2815,15 @@
       if (typeof el.select === "function") el.select();
       el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "a", ctrlKey: true }));
       el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "a", ctrlKey: true }));
-      await setValueWithEvents(el, target);
-      await sleep(50);
+      await write();
+      await sleep(settleMs);
       const actual2 = getCurrentValue(el);
       if (actual2 === target) {
         el.blur?.();
         el.dispatchEvent(new FocusEvent('focusout', { bubbles:true }));
         return { ok: true, action: "type_text", index, value: target, verified: true, retried: true, note: norm.note };
       }
-      return { ok: false, reason: "回读验证失败", expected: target, actual: actual2, note: norm.note };
+      return { ok: false, reason: `回读验证失败（期望 ${target}，实际 ${actual2 || '空白'}）`, expected: target, actual: actual2, note: norm.note };
     } catch (err) {
       return { ok: false, reason: `重试异常: ${err.message}`, expected: target };
     }
@@ -2339,6 +2904,7 @@
     const close = layer && Array.from(layer.querySelectorAll('button,[role="button"]')).find(el =>
       isVisible(el) && (el.matches('.el-dialog__headerbtn') || /^(close|关闭|取消)$/i.test(tidyLabel(el.getAttribute('aria-label') || el.textContent || ''))));
     if (close) { close.click(); return; }
+    if (platformDrivers.closeTransactions(document, location.hostname)) return;
     if (widgetDrivers.closeOpenTransactions) widgetDrivers.closeOpenTransactions(document);
     else {
       const escape = new KeyboardEvent('keydown', { bubbles:true, cancelable:true, key:'Escape', code:'Escape', keyCode:27, which:27 });
@@ -2629,6 +3195,8 @@
 
   // === 消息处理 ===
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    // executeScript 热替换后，旧监听器留在同一隔离世界中；仅最新版本响应消息。
+    if (globalThis.__jevResumeFillerContentVersion !== CONTENT_SCRIPT_VERSION) return false;
     if (!msg || !msg.type) {
       sendResponse({ ok: false, reason: "no_type" });
       return true;
@@ -2637,7 +3205,7 @@
     try {
       switch (msg.type) {
         case "PING":
-          sendResponse({ ok: true, url: location.href, message: "content script 收到 PING" });
+          sendResponse({ ok: true, url: location.href, version: CONTENT_SCRIPT_VERSION, message: "content script 收到 PING" });
           return true;
 
         // 只回指纹，不建元素表：给 Service Worker 做"页面是否还是原来那张"的廉价检查
@@ -2664,7 +3232,7 @@
               title: document.title,
               activeSection: activeSectionTitle(),
               editorSurface: hasEditorSurface(),
-              platform: isMokaFormPage() ? 'moka-form' : '',
+              platform: platformDrivers.platformId(location.hostname, document) || (isMokaFormPage() ? 'moka-form' : ''),
               text: getPageText(),
               authRequired: /尚未登录|登录时间过长|登录已过期|登录失效|请重新登录|扫码登录/.test(
                 document.body?.innerText || document.body?.textContent || '')
@@ -2714,6 +3282,36 @@
           const token = `jev-${Date.now()}-${Math.random().toString(36).slice(2)}`;
           el.setAttribute('data-jev-fill-target', token);
           sendResponse({ok:true,token});
+          return true;
+        }
+
+        case "TRUSTED_CLICK_POINT": {
+          sendResponse(trustedClickPoint(msg.index));
+          return true;
+        }
+
+        case "FEISHU_YEAR_TARGET": {
+          sendResponse(feishuYearTarget(msg.index));
+          return true;
+        }
+
+        case "FEISHU_YEAR_CHOICE_POINT": {
+          sendResponse(feishuYearChoicePoint(msg.index, msg.year));
+          return true;
+        }
+
+        case "FEISHU_RANGE_STATE": {
+          sendResponse(feishuRangeState(msg.index));
+          return true;
+        }
+
+        case "FEISHU_RANGE_SLOT_POINT": {
+          sendResponse(feishuRangeSlotPoint(msg.index, msg.slot));
+          return true;
+        }
+
+        case "FEISHU_RANGE_CHOICE_POINT": {
+          sendResponse(feishuRangeChoicePoint(msg.index, msg.slot, msg.axis, msg.value));
           return true;
         }
 

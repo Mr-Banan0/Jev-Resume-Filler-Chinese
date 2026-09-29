@@ -45,7 +45,10 @@ console.log('✓ 日期逐列验证、两级地址叶节点、精确字段绑定
 
 const shortRegion = buildActionPlan([option('p','浙江'),confirm],resume,[{kind:'click',resumeField:'basics.nativePlace'}]);
 assert.equal(shortRegion.actions[0].target,'p');
-const interviewResume=prepareResume({basics:{location:{city:'南京',region:{province:'浙江省',city:'南京市',district:'建邺区'}}}});
+const interviewResume=prepareResume({
+  basics:{location:{city:'南京',region:{province:'浙江省',city:'南京市',district:'建邺区'}}},
+  application:{interviewSite:'南京'}
+});
 assert.equal(buildActionPlan([option('gd','浙江')],interviewResume,
   [{kind:'click',resumeField:'application.interviewSite'}]).actions[0].target,'gd');
 assert.equal(buildActionPlan([option('sz','南京','radio')],interviewResume,
@@ -160,6 +163,18 @@ assert.equal(buildActionPlan([gpaControl],{education:[{gpa:''},{gpa:'3.8'}]}).ac
 const dateControl={index:'start',kind:'custom-select',label:'开始时间',operations:['CLICK']};
 const scoped=buildActionPlan([dateControl],{education:[{startDate:'2025-09'}],internship:[{startDate:'2026-07'}]},[],{title:'教育经历'});
 assert.deepEqual(scoped.actions.map(a=>a.resumeField),['education[0].startDate']);
+const beisenAwardDate={index:'award-date',kind:'beisen-date',label:'获奖时间',value:'',operations:['PICK_DATE']};
+const beisenAwardPlan=buildActionPlan([beisenAwardDate],{awards:[{title:'奖项甲',date:'2024-08'}]},[],{title:'获奖情况'});
+assert.deepEqual(beisenAwardPlan.actions.map(action=>[action.target,action.operation,action.resumeField]),
+  [['award-date','PICK_DATE','awards[0].date']]);
+const beisenFluency=[
+  {index:'fluency',kind:'custom-select',label:'掌握程度',value:'',operations:['CLICK']},
+  {index:'fluent-option',kind:'option-item',label:'熟练',value:'',operations:['CLICK'],context:'popup'}
+];
+const beisenFluencyPlan=buildActionPlan(beisenFluency,{languages:[{language:'英语',siteFluency:'良好'}]},
+  [{kind:'click',resumeField:'languages[0].siteFluency'}],{title:'语言能力'});
+assert.equal(beisenFluencyPlan.actions[0]?.target,'fluent-option',
+  '北森将“良好”显示为“熟练”时应选择已观察到的站内选项');
 const rawAwards={awards:[{title:'发明专利（专利号：TEST）'},{title:'2024 测试竞赛一等奖',date:'2024'}]};
 const cleaned=prepareResume(rawAwards);
 assert.equal(rawAwards.awards.length,2);

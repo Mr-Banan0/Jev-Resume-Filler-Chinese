@@ -18,11 +18,31 @@ window.HTMLElement.prototype.getBoundingClientRect = () =>
 const listeners=[];
 window.chrome={runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessage:(_msg,cb)=>cb?.(),lastError:null}};
 window.eval(readFileSync(new URL('../content/widget-drivers.js',import.meta.url),'utf8'));
+window.eval(readFileSync(new URL('../content/platform-drivers.js',import.meta.url),'utf8'));
 window.eval(readFileSync(new URL('../content/content.js',import.meta.url),'utf8'));
 const result=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
 const fields=result.elements.filter(el=>el.kind==='input');
 assert.deepEqual(Array.from(fields,el=>el.label),['姓名','邮箱','学校名称','家属姓名']);
 assert.deepEqual(Array.from(fields,el=>el.section),['个人信息','个人信息','教育经历','家庭情况']);
+const leadingRequired=window.document.createElement('div');
+leadingRequired.className='form-row';
+leadingRequired.innerHTML='<div class="field-title">* 证件号码</div><div><input placeholder="请输入"></div>';
+window.document.body.append(leadingRequired);
+const requiredSnapshot=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
+assert.equal(requiredSnapshot.elements.find(el=>el.label==='证件号码')?.required,true,
+  '北森标题以星号开头的个人字段必须报告为必填，预填姓名不能让整个分区提前完成');
+leadingRequired.remove();
+const beisenDate=window.document.createElement('div');
+beisenDate.className='form-row';
+beisenDate.innerHTML='<div class="field-title">获奖时间 *</div><div class="el-date-editor"><input readonly placeholder="请选择"></div>';
+window.document.body.append(beisenDate);
+const dateSnapshot=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
+const dateField=dateSnapshot.elements.find(el=>String(el.label || '').includes('获奖时间'));
+assert.equal(dateField?.kind,'beisen-date','北森 Element UI 日期框应使用确定性日期控件族');
+assert.deepEqual(Array.from(dateField?.operations || []),['PICK_DATE']);
+assert.equal(dateField?.required,true);
+beisenDate.remove();
+window.document.querySelectorAll('.form-row')[3]?.remove();
 const familyRows=window.document.createElement('div');
 familyRows.innerHTML=`<h2>家庭情况</h2>
   <div class="form-row"><div class="field-title">姓名 *</div><input placeholder="请输入"></div>
@@ -61,7 +81,13 @@ assert.ok(calendarSnapshot.elements.some(el=>el.context==='popup' && el.label===
   '北森日期面板的无文字上一页按钮应有可执行语义');
 assert.ok(calendarSnapshot.elements.some(el=>el.context==='popup' && el.label==='1960-1969'),
   '北森日期面板的年代格应进入弹层候选');
-calendarPanel.remove();
+window.document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') calendarPanel.remove();
+}, {once:true});
+await new Promise(resolve=>listeners[0]({type:'CLOSE_TRANSACTIONS'},{},resolve));
+const closedCalendarSnapshot=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
+assert.ok(!closedCalendarSnapshot.elements.some(el=>el.context==='popup' && el.label==='1960-1969'),
+  '离开北森日期字段时关闭旧日历，下一分区不会继承陈旧候选');
 for (let index = 0; index < 25; index++) {
   const card = window.document.createElement('div');
   card.style.cursor = 'pointer';

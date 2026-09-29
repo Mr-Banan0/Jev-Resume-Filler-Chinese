@@ -18,6 +18,7 @@
       ],
       "js": [
         "content/widget-drivers.js",
+        "content/platform-drivers.js",
         "content/content.js"
       ],
       "run_at": "document_idle",
@@ -29,7 +30,8 @@
     "storage",
     "activeTab",
     "scripting",
-    "tabs"
+    "tabs",
+    "debugger"
   ],
   "host_permissions": [
     "https://api.typesafe.ai/*",

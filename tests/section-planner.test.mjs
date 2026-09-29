@@ -34,6 +34,11 @@ assert.equal(countRenderedRecords('家庭情况',[
   control('96','家庭情况','姓名'),
   control('97','家庭情况','出生年月')]),1,
   '家庭成员按姓名识别记录数');
+assert.equal(countRenderedRecords('项目经历',[
+  {...control('97a','项目经历','项目名称'),recordIndex:0},
+  {...control('97b','项目经历','添加项目经历','card'),recordIndex:1,operations:['CLICK']}
+]),1,
+  '飞书“添加”入口标注下一条位置时，不把入口本身当作已渲染项目');
 const secondInternship = buildSectionPlan([
   {...control('98','实习经历','单位名称'),value:'示例科技公司 A'},
   {...control('99','实习经历','实习内容'),value:'已有内容'},
@@ -44,6 +49,22 @@ const secondInternship = buildSectionPlan([
 ]});
 assert.ok(secondInternship.actions.some(action=>action.operation==='ADD_RECORD' && action.recordIndex===1),
   '首条实习填完后应新增第二条，不能把实习内容误计为另一条记录');
+const completedFirstProject = buildSectionPlan([
+  {...control('101','项目经历','项目名称'),recordIndex:0,value:'项目甲'},
+  {...control('102','项目经历','项目描述'),recordIndex:0,value:'已填写的项目描述'},
+  {...control('103','项目经历','添加项目经历','card'),recordIndex:1,operations:['CLICK']}
+], {projects:[
+  {name:'项目甲',description:'已填写的项目描述'},
+  {name:'项目乙',description:'待填写的项目描述'},
+  {name:'项目丙',description:'待填写的项目描述'}
+]});
+assert.ok(completedFirstProject.actions.some(action=>action.operation==='ADD_RECORD' && action.recordIndex===1),
+  '飞书完成第一条项目后应立即新增第二条，而不是反复验收第一条');
+const selfEvaluationPlan = buildSectionPlan([
+  {...control('104','自我评价','添加','card'),operations:['CLICK']}
+], {basics:{summary:'面向数据与软件系统的个人总结'}});
+assert.ok(selfEvaluationPlan.actions.some(action=>action.operation==='ADD_RECORD' && action.recordIndex===0),
+  '单例自我评价有本地内容且网页为空时，应通过添加入口创建编辑区域');
 const blockedFirstInternship=buildSectionPlan([
   {...control('110','实习经历','单位名称'),value:'示例科技公司 A'},
   {...control('111','实习经历','开始时间','custom-select'),operations:['CLICK'],value:''},
@@ -51,8 +72,8 @@ const blockedFirstInternship=buildSectionPlan([
 ],{internship:[{company:'示例科技公司 A',startDate:'2026-07-01'},
   {company:'示例研究中心 B'}]},
 {'实习经历|*':{workBlocked:true}});
-assert.ok(blockedFirstInternship.actions.some(action=>action.operation==='ADD_RECORD' && action.recordIndex===1),
-  '第一条日期待补时仍应新增并填写第二条实习');
+assert.ok(!blockedFirstInternship.actions.some(action=>action.operation==='ADD_RECORD'),
+  '第一条日期待补时保持当前记录，避免先新增第二条造成空白记录');
 const recordSnapshot = (rendered, editable, page={}) => ({page:{url:'https://example.test/resume',...page},elements:[
   ...Array.from({length:rendered},(_,index)=>({section:'实习经历',recordIndex:index,label:'单位名称',kind:'input',operations:['TYPE_TEXT']})),
   ...Array.from({length:Math.max(0,editable-rendered)},(_,index)=>({section:'实习经历',label:`字段${index}`,kind:'input',operations:['TYPE_TEXT']}))
@@ -112,11 +133,18 @@ assert.ok(completed.actions.some(a => a.operation === 'ADD_RECORD' && a.section 
 
 const blocked = buildSectionPlan(elements,resume,{'教育背景|1':{workBlocked:true,status:'待处理'}});
 assert.ok(!blocked.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'));
-assert.ok(blocked.actions.some(a => a.operation === 'ADD_RECORD' && a.section === '教育背景'),
-  '内联表单当前记录待补时继续新增下一条');
+assert.ok(!blocked.actions.some(a => a.operation === 'ADD_RECORD' && a.section === '教育背景'),
+  '内联表单存在待补字段时保持当前记录，避免新增空白重复记录');
 
 const retriedThreeTimes = buildSectionPlan(elements,resume,{'教育背景|1':{workAttempts:3,status:'待处理'}});
 assert.ok(!retriedThreeTimes.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'));
+const importedUnknownAward = buildSectionPlan([
+  {...control('114','获奖情况','获奖项'),value:'网站导入的历史奖项'},
+  {...control('115','获奖情况','获奖时间','beisen-date'),operations:['PICK_DATE'],value:''},
+  control('116','获奖情况','添加获奖情况','action')
+],{awards:[{title:'本地奖项 A',date:'2024-08'},{title:'本地奖项 B',date:'2023-11'}]});
+assert.ok(!importedUnknownAward.actions.some(action=>action.operation==='ADD_RECORD'),
+  '网站已有未匹配的用户记录时保留现场，不用本地条目继续追加');
 const globallyBlocked = buildSectionPlan(elements,resume,{'教育背景|*':{workBlocked:true,status:'无可执行动作'}});
 assert.ok(!globallyBlocked.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'),
   '同一分区无动作时跨记录计数变化也不能重复执行');

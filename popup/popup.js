@@ -1,4 +1,6 @@
 // popup.js — 阶段1：简历录入 + 多段经历 + JSON 导入导出 + Key 持久化
+import { CONTENT_SCRIPT_VERSION } from '../lib/content-version.js';
+
 const DEFAULT_RESUME_URL = chrome.runtime.getURL('data/resume-default.json');
 
 const state = {
@@ -48,18 +50,18 @@ async function getActivePageTab() {
   return tab;
 }
 
-// 确保 content script 已在标签页的所有 frame；未注入时用 scripting.executeScript 补一次
+// 确保 content script 已在标签页的所有 frame；扩展重载后的旧脚本也会被替换。
 async function ensureContentScript(tabId) {
   try {
     const pong = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
-    if (pong && pong.ok) return true;
+    if (pong && pong.ok && pong.version === CONTENT_SCRIPT_VERSION) return true;
   } catch (_) {
     // 未注入，走下面的兜底注入
   }
   try {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      files: ['content/content.js']
+      files: ['content/widget-drivers.js', 'content/platform-drivers.js', 'content/content.js']
     });
     return true;
   } catch (err) {

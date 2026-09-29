@@ -275,6 +275,7 @@
           "endDate": { "type": "string", "title": "结束时间" },
           "summary": { "type": "string", "title": "实习描述" },
           "department": { "type": "string", "title": "部门" },
+          "location": { "type": "string", "title": "实习地点", "examples": ["深圳"] },
           "isPresent": { "type": "boolean", "title": "是否仍在职" },
           "highlights": { "type": "array", "title": "实习亮点", "items": { "type": "string" } },
           "leaveReason": { "type": "string", "title": "结束原因", "examples": ["实习结束"] },
@@ -295,6 +296,7 @@
           "endDate": { "type": "string", "title": "结束时间", "examples": ["至今"] },
           "summary": { "type": "string", "title": "工作描述" },
           "department": { "type": "string", "title": "部门" },
+          "location": { "type": "string", "title": "工作地点", "examples": ["上海"] },
           "isPresent": { "type": "boolean", "title": "是否仍在职" },
           "highlights": { "type": "array", "title": "工作亮点", "items": { "type": "string" } },
           "leaveReason": { "type": "string", "title": "离职原因", "description": "在职留空" },
@@ -312,6 +314,7 @@
           "role": { "type": "string", "title": "担任角色" },
           "startDate": { "type": "string" },
           "endDate": { "type": "string" },
+          "location": { "type": "string", "title": "项目地点" },
           "description": { "type": "string", "title": "项目描述" },
           "techStack": { "type": "array", "title": "技术栈", "items": { "type": "string" } }
         }

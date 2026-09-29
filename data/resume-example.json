@@ -73,6 +73,7 @@
       "endDate": "2022-09",
       "summary": "参与商家收银台 H5 开发，完成支付流程页。",
       "department": "前端研发部",
+      "location": "北京",
       "isPresent": false,
       "highlights": [],
       "leaveReason": "实习结束",
@@ -87,6 +88,7 @@
       "endDate": "至今",
       "summary": "负责抖音电商商家端 PC 后台开发，主导订单管理模块重构，性能提升 40%。",
       "department": "商家产品研发部",
+      "location": "上海",
       "isPresent": true,
       "highlights": ["订单管理模块重构", "性能优化 40%"],
       "leaveReason": "",
@@ -99,6 +101,7 @@
       "role": "独立开发者",
       "startDate": "2026-09",
       "endDate": "至今",
+      "location": "线上",
       "description": "基于 Jev 决策模型的 Chrome 扩展，用于网申时自动填写简历。",
       "techStack": ["Chrome MV3", "JavaScript", "TypeSafe Jev"]
     }

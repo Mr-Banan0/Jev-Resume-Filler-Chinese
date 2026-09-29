@@ -29,6 +29,7 @@ window.chrome = {
   runtime: {onMessage:{addListener: handler => listeners.push(handler)}, sendMessage:(_message,done) => done?.(), lastError:null}
 };
 window.eval(readFileSync(new URL('../content/widget-drivers.js', import.meta.url), 'utf8'));
+window.eval(readFileSync(new URL('../content/platform-drivers.js', import.meta.url), 'utf8'));
 window.eval(readFileSync(new URL('../content/content.js', import.meta.url), 'utf8'));
 const snapshot = await new Promise(resolve => listeners[0]({type:'SNAPSHOT_REQUEST'}, {}, resolve));
 assert.equal(snapshot.page.platform, 'moka-form');

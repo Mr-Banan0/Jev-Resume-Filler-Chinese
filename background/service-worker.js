@@ -2,6 +2,7 @@
 // 接收 Popup 的 START_FILL，跑完整 Agent 循环，通过 FILL_PROGRESS/FILL_DONE 推送进度
 
 import { buildActionPlan, buildSectionPlan, choose, classifyRecordAddition, countRenderedRecords, getResumeValue, prepareResume, sectionCollection } from "../lib/jev-client.js";
+import { CONTENT_SCRIPT_VERSION } from "../lib/content-version.js";
 import { classifyPageState } from "../lib/page-state.js";
 import { honorSections, recordIdentity, savedAt, HONOR_OVERVIEW_PATH } from "../lib/honor-flow.js";
 
@@ -78,6 +79,216 @@ function sendToFrame(tabId, frameId, message) {
       }
     });
   });
+}
+
+// 飞书招聘的部分卡片仅响应浏览器派发的真实用户输入。内容脚本负责把已扫描的
+// 卡片转换成当前视口坐标，后台在当前标签页短暂附加 Chrome 调试通道发送一次
+// 鼠标事务，并在事务结束后立即分离。该路径仅由快照中的 trusted-pointer 标记
+// 启用，普通网页继续使用原有的 DOM 执行器。
+async function clickWithTrustedPointer(tabId, frameId, index) {
+  if (frameId !== 0) {
+    return {ok:false,reason:'真实指针点击目前仅支持顶层飞书表单'};
+  }
+  const target = await sendToFrame(tabId, frameId, {type:'TRUSTED_CLICK_POINT',index});
+  if (!target?.ok || target.clickMode !== 'trusted-pointer') {
+    return target?.ok ? {ok:false,reason:'目标未声明真实指针点击策略'} : target;
+  }
+  if (!chrome.debugger?.attach || !chrome.debugger?.sendCommand || !chrome.debugger?.detach) {
+    return {ok:false,reason:'扩展尚未启用 Chrome debugger 权限，无法执行飞书真实点击'};
+  }
+  const debuggee = {tabId};
+  let attached = false;
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    const x = Number(target.point?.x);
+    const y = Number(target.point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return {ok:false,reason:'飞书卡片未返回有效点击坐标'};
+    }
+    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+      type:'mouseMoved',x,y,pointerType:'mouse'
+    });
+    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+      type:'mousePressed',x,y,button:'left',buttons:1,clickCount:1,pointerType:'mouse'
+    });
+    await sleep(35);
+    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+      type:'mouseReleased',x,y,button:'left',buttons:0,clickCount:1,pointerType:'mouse'
+    });
+    return {ok:true,action:'click',bridge:'trusted-pointer',label:target.label};
+  } catch (err) {
+    return {ok:false,reason:`飞书真实点击未执行：${err.message}`};
+  } finally {
+    if (attached) await chrome.debugger.detach(debuggee).catch(() => {});
+  }
+}
+
+async function executePageClick(tabId, frameId, index, trustedPointer = false) {
+  if (trustedPointer) return clickWithTrustedPointer(tabId, frameId, index);
+  return sendToFrame(tabId, frameId, {type:'EXECUTE',action:'click',index});
+}
+
+// 飞书的单年份框通过展开年份网格提交值。内容脚本将输入框和已展开网格中的
+// 年份条目转换成坐标，后台用浏览器原生指针依次打开并选择，随后回读输入值。
+async function selectFeishuYearFromPicker(tabId, frameId, index, value) {
+  if (frameId !== 0) return {ok:false,reason:'飞书年份选择器目前仅支持顶层表单'};
+  const target = await sendToFrame(tabId, frameId, {type:'FEISHU_YEAR_TARGET',index});
+  if (!target?.ok || target.inputMode !== 'feishu-year-picker') {
+    return target?.ok ? {ok:false,reason:'目标未声明飞书年份选择器策略'} : target;
+  }
+  if (!chrome.debugger?.attach || !chrome.debugger?.sendCommand || !chrome.debugger?.detach) {
+    return {ok:false,reason:'扩展尚未启用 Chrome debugger 权限，无法执行飞书年份选择'};
+  }
+  const x = Number(target.point?.x);
+  const y = Number(target.point?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return {ok:false,reason:'飞书年份框未返回有效输入坐标'};
+  const marked = await sendToFrame(tabId, frameId, {type:'MARK_TARGET',index});
+  if (!marked?.ok) return marked;
+  const selector = `[data-jev-fill-target="${marked.token}"]`;
+  const readValue = `(() => document.querySelector(${JSON.stringify(selector)})?.value || '')()`;
+
+  const debuggee = {tabId};
+  let attached = false;
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+      type:'mousePressed',x,y,button:'left',buttons:1,clickCount:1,pointerType:'mouse'
+    });
+    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+      type:'mouseReleased',x,y,button:'left',buttons:0,clickCount:1,pointerType:'mouse'
+    });
+    await sleep(80);
+    const choice = await sendToFrame(tabId, frameId, {
+      type:'FEISHU_YEAR_CHOICE_POINT',index,year:String(value)
+    });
+    if (!choice?.ok || choice.selectionMode !== 'feishu-year-picker') {
+      return choice?.ok ? {ok:false,reason:'飞书年份网格未提供目标年份'} : choice;
+    }
+    const choiceX = Number(choice.point?.x);
+    const choiceY = Number(choice.point?.y);
+    if (!Number.isFinite(choiceX) || !Number.isFinite(choiceY)) {
+      return {ok:false,reason:'飞书年份网格未返回有效选择坐标'};
+    }
+    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+      type:'mousePressed',x:choiceX,y:choiceY,button:'left',buttons:1,clickCount:1,pointerType:'mouse'
+    });
+    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+      type:'mouseReleased',x:choiceX,y:choiceY,button:'left',buttons:0,clickCount:1,pointerType:'mouse'
+    });
+    await sleep(120);
+    const verification = await chrome.debugger.sendCommand(debuggee, 'Runtime.evaluate', {
+      expression:readValue,returnByValue:true,awaitPromise:true
+    });
+    const actual = String(verification?.result?.value || '');
+    if (actual !== String(value)) {
+      return {ok:false,reason:`飞书年份框回读失败（期望 ${value}，实际 ${actual || '空白'}）`};
+    }
+    return {ok:true,action:'type_text',bridge:'feishu-year-picker',label:target.label};
+  } catch (err) {
+    return {ok:false,reason:`飞书年份选择未执行：${err.message}`};
+  } finally {
+    if (attached) await chrome.debugger.detach(debuggee).catch(() => {});
+  }
+}
+
+// 飞书的月份范围由两个可见日期槽和弹出的年、月列表组成。隐藏 input 的 value
+// 不代表表单已接受的日期；每一端都通过选择器提交，再从可见槽回读。
+async function selectFeishuRangeFromPicker(tabId, frameId, index, value) {
+  if (frameId !== 0) return {ok:false,reason:'飞书日期范围仅支持顶层表单'};
+  const match = String(value || '').match(/^(\d{4}-\d{2}) - (\d{4}-\d{2}|至今)$/);
+  if (!match) return {ok:false,reason:'飞书日期范围需要起止年月或“至今”'};
+  if (!chrome.debugger?.attach || !chrome.debugger?.sendCommand || !chrome.debugger?.detach) {
+    return {ok:false,reason:'扩展尚未启用 Chrome debugger 权限，无法选择飞书日期'};
+  }
+  const wanted = [match[1],match[2]];
+  const read = () => sendToFrame(tabId, frameId, {type:'FEISHU_RANGE_STATE',index});
+  const initial = await read();
+  if (!initial?.ok) return initial;
+  const debuggee = {tabId};
+  let attached = false;
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    const clickPoint = async result => {
+      if (!result?.ok) throw new Error(result?.reason || '飞书日期未返回点击目标');
+      const x = Number(result.point?.x);
+      const y = Number(result.point?.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error('飞书日期坐标无效');
+      await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+        type:'mouseMoved',x,y,pointerType:'mouse'
+      });
+      await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+        type:'mousePressed',x,y,button:'left',buttons:1,clickCount:1,pointerType:'mouse'
+      });
+      await sleep(35);
+      await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+        type:'mouseReleased',x,y,button:'left',buttons:0,clickCount:1,pointerType:'mouse'
+      });
+      await sleep(90);
+    };
+    const choosePart = async (slot, axis, part) => {
+      let point;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        point = await sendToFrame(tabId,frameId,{
+          type:'FEISHU_RANGE_CHOICE_POINT',index,slot,axis,value:part
+        });
+        if (point?.ok) break;
+        await sleep(150);
+      }
+      await clickPoint(point);
+    };
+    const waitForSlot = async (slot, expected) => {
+      let state;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        state = await read();
+        if (state?.ok && state.values?.[slot] === expected) return state;
+        await sleep(120);
+      }
+      return state;
+    };
+    for (let slot = 0; slot < 2; slot += 1) {
+      const state = await read();
+      if (!state?.ok) throw new Error(state?.reason || '飞书日期状态无法读取');
+      const current = String(state.values?.[slot] || '');
+      if (current === wanted[slot]) continue;
+      if (current !== 'YYYY-MM' && current !== '') {
+        throw new Error(`飞书日期第 ${slot + 1} 端已有不同值 ${current}，已保留`);
+      }
+      await clickPoint(await sendToFrame(tabId,frameId,{type:'FEISHU_RANGE_SLOT_POINT',index,slot}));
+      const [year,month] = wanted[slot] === '至今' ? ['至今',''] : wanted[slot].split('-');
+      await choosePart(slot,'year',year);
+      if (month) {
+        let afterYear = await read();
+        if (afterYear?.values?.[slot] !== wanted[slot]) {
+          let monthPoint = await sendToFrame(tabId,frameId,{
+            type:'FEISHU_RANGE_CHOICE_POINT',index,slot,axis:'month',value:month
+          });
+          if (!monthPoint?.ok) {
+            await clickPoint(await sendToFrame(tabId,frameId,{type:'FEISHU_RANGE_SLOT_POINT',index,slot}));
+            monthPoint = await sendToFrame(tabId,frameId,{
+              type:'FEISHU_RANGE_CHOICE_POINT',index,slot,axis:'month',value:month
+            });
+          }
+          await clickPoint(monthPoint);
+        }
+      }
+      const updated = await waitForSlot(slot,wanted[slot]);
+      if (!updated?.ok || updated.values?.[slot] !== wanted[slot]) {
+        throw new Error(`飞书日期第 ${slot + 1} 端回读失败（期望 ${wanted[slot]}，实际 ${updated?.values?.[slot] || '空白'}）`);
+      }
+    }
+    const finalState = await read();
+    if (!finalState?.ok || finalState.values?.some((item,slot) => item !== wanted[slot])) {
+      return {ok:false,reason:`飞书日期范围回读失败：${finalState?.values?.join(' - ') || '空白'}`};
+    }
+    return {ok:true,action:'type_text',bridge:'feishu-range-picker',value:wanted.join(' - ')};
+  } catch (err) {
+    return {ok:false,reason:`飞书日期选择未完成：${err.message}`};
+  } finally {
+    if (attached) await chrome.debugger.detach(debuggee).catch(() => {});
+  }
 }
 
 async function clickBeisenPickerInPage(tabId, frameId, index, label, pickerLeaf = false) {
@@ -380,11 +591,11 @@ async function pageFingerprint(tabId) {
 // 确保 content script 已在该标签页所有 frame；扩展重新加载后旧页面不会自动注入，这里补一次
 async function ensureContentScript(tabId) {
   const ping = await sendToFrame(tabId, 0, { type: "PING" });
-  if (ping && ping.ok) return true;
+  if (ping && ping.ok && ping.version === CONTENT_SCRIPT_VERSION) return true;
   try {
     await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      files: ["content/widget-drivers.js", "content/content.js"]
+      files: ["content/widget-drivers.js", "content/platform-drivers.js", "content/content.js"]
     });
   } catch (err) {
     console.warn("[Jev Resume Filler] 注入 content script 失败:", err.message);
@@ -789,14 +1000,32 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
     onProgress({ step, phase: "execute", action: actionLabel });
     const isMoka = snap.page?.platform === 'moka-form' ||
       (() => { try { return /(^|\.)mokahr\.com$/i.test(new URL(snap.page.url).hostname); } catch (_) { return false; } })();
+    const isFeishu = snap.page?.platform === 'feishu-jobs' ||
+      (() => { try { return /(^|\.)jobs\.feishu\.cn$/i.test(new URL(snap.page.url).hostname); } catch (_) { return false; } })();
+    const keepFeishuSearchOpen = isFeishu && operation === 'TYPE_TEXT' &&
+      /^education\[\d+\]\.(institution|area)$/.test(resumeField || '') &&
+      /(?:学校|专业|请输入)/.test(`${decision.label || ''} ${targetEntry?.label || ''}`);
     const beisenPopupChoice = operation === 'CLICK' && decision.context === 'popup' &&
       (() => { try { return /(^|\.)zhiye\.com$/i.test(new URL(snap.page.url).hostname); } catch (_) { return false; } })() &&
       !/^(取消|清空已选)$/.test(decision.label || '');
+    const feishuTrustedPointer = operation === 'CLICK' && isFeishu &&
+      targetEntry?.clickMode === 'trusted-pointer';
+    const feishuYearPicker = operation === 'TYPE_TEXT' && isFeishu &&
+      targetEntry?.kind === 'feishu-year';
+    const feishuRangePicker = operation === 'TYPE_TEXT' && isFeishu &&
+      targetEntry?.kind === 'feishu-date-range';
     let execRes = beisenPopupChoice
       ? await clickBeisenPickerInPage(tabId,frameId,local,decision.label,decision.pickerLeaf)
-      : operation === 'TYPE_TEXT' && isMoka
-        ? await commitControlledText(tabId, frameId, local, execMsg.value, targetEntry?.kind === 'combobox')
-        : await sendToFrame(tabId, frameId, execMsg);
+      : feishuYearPicker
+        ? await selectFeishuYearFromPicker(tabId, frameId, local, execMsg.value)
+      : feishuRangePicker
+        ? await selectFeishuRangeFromPicker(tabId, frameId, local, execMsg.value)
+      : operation === 'TYPE_TEXT' && (isMoka || keepFeishuSearchOpen)
+        ? await commitControlledText(tabId, frameId, local, execMsg.value,
+          (isMoka && targetEntry?.kind === 'combobox') || keepFeishuSearchOpen)
+        : operation === 'CLICK'
+          ? await executePageClick(tabId, frameId, local, feishuTrustedPointer)
+          : await sendToFrame(tabId, frameId, execMsg);
     if (beisenPopupChoice && !execRes?.ok && /找不到北森单选图标|目标不属于北森常量选择器/.test(execRes?.reason || '')) {
       execRes = await sendToFrame(tabId, frameId, execMsg);
     }
@@ -1277,7 +1506,13 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       if (!el.required) continue;
       const value = String(el.value || '').trim();
       const empty = !value || /^(请选择|请填写|必填项未填写|上传|年|月)$/.test(value);
-      if (empty && el.checked !== true) addPendingIssue(`${el.section || '页面'} ${el.label || '未命名必填项'}`, '网站必填字段尚未填写');
+      if (!empty || el.checked === true) continue;
+      const localPlan = buildActionPlan([el], resume, [], {
+        ...current.page, title:el.section || '', allowAddRecords:false, scopedSection:true
+      });
+      if (localPlan.summary?.mappedControls > 0) {
+        addPendingIssue(`${el.section || '页面'} ${el.label || '未命名必填项'}`, '网站必填字段尚未填写');
+      }
     }
   };
   const finish = async (reason) => {
@@ -1338,7 +1573,9 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
     if (decision.operation === 'DEFER_SECTION') {
       await auditRequiredFields();
       const {frameId,local} = parseFrameTarget(decision.target);
-      const executed = await sendToFrame(tabId,frameId,{type:'EXECUTE',action:'click',index:local});
+      const targetEntry = snap.elements.find(element => String(element.index) === String(decision.target));
+      const executed = await executePageClick(tabId,frameId,local,
+        snap.page?.platform === 'feishu-jobs' && targetEntry?.clickMode === 'trusted-pointer');
       await sleep(WAIT_MS_SECTION);
       const after = await snapshotAllFrames(tabId);
       const editorRemains = after.page.activeSection === decision.section && after.elements.some(el =>
@@ -1364,7 +1601,9 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       const beforeControls = snap.elements.filter(el => el.section === decision.section && el.context !== 'popup');
       const beforeRendered = countRenderedRecords(decision.section, beforeControls);
       const {frameId,local} = parseFrameTarget(decision.target);
-      const executed = await sendToFrame(tabId,frameId,{type:'EXECUTE',action:'click',index:local});
+      const targetEntry = snap.elements.find(element => String(element.index) === String(decision.target));
+      const executed = await executePageClick(tabId,frameId,local,
+        snap.page?.platform === 'feishu-jobs' && targetEntry?.clickMode === 'trusted-pointer');
       if (!executed?.ok) {
         const current = await snapshotAllFrames(tabId);
         const currentControls = current.elements.filter(el => el.section === decision.section && el.context !== 'popup');
@@ -1442,7 +1681,14 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
     }
     const savedSingleton = result.sectionSaved &&
       !Array.isArray(resume[sectionCollection(decision.section)]);
-    const status = result.ok && (inlineComplete || savedRecord || savedSingleton) ? 'verified' : 'blocked';
+    const previousAttempts = ledger[key]?.workAttempts || 0;
+    const noProgress = !result.ok && afterWork.fingerprint === before.fingerprint;
+    const noAvailableAction = !result.ok &&
+      /^当前页面没有可执行的已映射动作/.test(result.reason || '');
+    const noLocalMapping = noAvailableAction && planBefore.summary?.mappedControls === 0 &&
+      !(planBefore.summary?.unresolvedMapped || []).length;
+    const status = noLocalMapping ? 'no-data' :
+      result.ok && (inlineComplete || savedRecord || savedSingleton) ? 'verified' : 'blocked';
     if (status === 'verified') {
       const source=resume[sectionCollection(decision.section)];
       const total=decision.section==='实习/工作经历' ? (resume.internship?.length || 0)+(resume.work?.length || 0) : Array.isArray(source) ? source.length : 1;
@@ -1451,17 +1697,17 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
         ledger[sectionKey]={...ledger[sectionKey],focusBlocked:true,workBlocked:true};
       }
     }
-    const previousAttempts = ledger[key]?.workAttempts || 0;
-    const noProgress = !result.ok && afterWork.fingerprint === before.fingerprint;
-    const noAvailableAction = !result.ok &&
-      /^当前页面没有可执行的已映射动作/.test(result.reason || '');
     if (noAvailableAction) {
       const sectionKey = `${decision.section}|*`;
-      ledger[sectionKey] = {...ledger[sectionKey],workBlocked:true,status:'当前分区无可执行的已映射动作'};
+      // 当前记录结束本轮尝试；调度器基于下一张快照决定是否存在可安全新增的下一条记录。
+      // 新增失败由 ADD_RECORD 的独立验收状态处理，避免一次局部映射缺口封锁整个分区。
+      ledger[sectionKey] = {...ledger[sectionKey],workBlocked:true,
+        status:'当前分区无可执行的已映射动作'};
     }
     // 动态字段可能在一次选择后才挂载（例如“其他”来源的补充输入框）。保留最多
     // 三次 section 复查机会，每次都基于新快照生成动作；第三次仍无进展才封锁。
-    ledger[key] = status === 'verified' ? {completed:true,status:'已回读'} :
+    ledger[key] = status === 'verified' ? {completed:true,status:'已回读'} : status === 'no-data' ?
+      {completed:true,status:'无本地映射字段'} :
       {workAttempts:result.terminal || noProgress ? 3 : previousAttempts + 1,
         status:result.terminal ? '网站未确认上传' : noProgress ? '页面没有产生变化' : '待处理（等待复查）'};
     if (status === 'verified') {
@@ -1486,7 +1732,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       }
       addPendingIssue(decision.section, result.reason || '当前分区未完成');
     }
-    report({step:turn,phase:'section',action:`「${decision.section}」${status === 'verified' ? '已回读，返回分区清单' : '保留待处理，继续其他分区'}`});
+    report({step:turn,phase:'section',action:`「${decision.section}」${status === 'verified' ? '已回读，返回分区清单' : status === 'no-data' ? '没有本地映射字段，继续其他分区' : '保留待处理，继续其他分区'}`});
     // 被 runAgent 填完后，网页可能多出记录或必填提示；每次都重新快照生成清单。
     if (!planBefore.actions.length && status === 'verified') ledger[key] = {completed:true,status:'无本地映射字段'};
   }

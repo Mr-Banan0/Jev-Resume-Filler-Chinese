@@ -21,7 +21,11 @@ const resume = {
 
 const GOAL = 'Fill the current section of the job application resume form with local resume data.';
 const actionFor = (plan, target, field) => plan.actions.find((a) => a.target === target && a.resumeField === field);
-const preparedLocation = prepareResume({basics:{location:{city:'南京'}},application:{}});
+const preparedLocation = prepareResume({
+  basics:{location:{city:'南京'}},
+  expected:{city:'南京'},
+  application:{interviewSite:'南京'}
+});
 const applicationPlan = buildActionPlan([
   {index:'site',section:'申请信息',kind:'custom-select',label:'校招面试站点',value:'',operations:['CLICK']},
   {index:'city',section:'申请信息',kind:'custom-select',label:'选择意向工作城市',value:'',operations:['CLICK']}
@@ -196,7 +200,7 @@ const checks = [
   ,['网站清空 file input 后不重复上传已成功照片', !uploadedPhotoPlan.actions.some(a=>a.operation==='UPLOAD_FILE')]
   ,['简历附件控件生成本地上传动作', actionFor(attachmentPlan, 'f0_31', 'basics.resumeFile')?.operation === 'UPLOAD_FILE']
   ,['网站清空 file input 后不重复上传已成功简历附件', !uploadedAttachmentPlan.actions.some(a=>a.operation==='UPLOAD_FILE')]
-  ,['申请信息从现居城市派生面试站点与意向城市',
+  ,['申请信息仅使用明确提供的面试站点与意向城市',
     actionFor(applicationPlan,'site','application.interviewSite')?.operation === 'CLICK' &&
     actionFor(applicationPlan,'city','expected.city')?.operation === 'CLICK']
 ];

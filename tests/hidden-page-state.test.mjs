@@ -11,7 +11,7 @@ const w=dom.window;
 w.HTMLElement.prototype.getBoundingClientRect=()=>({x:0,y:0,left:0,top:0,right:100,bottom:30,width:100,height:30});
 const listeners=[];
 w.chrome={runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessage:(_m,cb)=>cb?.()}};
-for(const path of ['content/widget-drivers.js','content/content.js']) w.eval(readFileSync(new URL('../'+path,import.meta.url),'utf8'));
+for(const path of ['content/widget-drivers.js','content/platform-drivers.js','content/content.js']) w.eval(readFileSync(new URL('../'+path,import.meta.url),'utf8'));
 const snapshot=()=>new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
 let snap=await snapshot();
 assert.equal(snap.elements.find(el=>el.placeholder==='请选择你意向调剂的城市')?.required,true);

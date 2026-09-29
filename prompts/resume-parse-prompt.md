@@ -171,6 +171,7 @@
       "position": "前端开发实习生",
       "startDate": "2022-03",
       "endDate": "2022-09",
+      "location": "北京",
       "summary": "负责商家后台订单页面前端开发与性能优化。",
       "highlights": []
     }
@@ -181,6 +182,7 @@
       "position": "前端开发工程师",
       "startDate": "2023-07",
       "endDate": "至今",
+      "location": "上海",
       "summary": "负责订单管理模块重构。",
       "highlights": [],
       "leaveReason": "",

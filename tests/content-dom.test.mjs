@@ -77,6 +77,7 @@ window.chrome = {
 };
 
 window.eval(readFileSync(new URL('../content/widget-drivers.js', import.meta.url), 'utf8'));
+window.eval(readFileSync(new URL('../content/platform-drivers.js', import.meta.url), 'utf8'));
 window.eval(readFileSync(new URL('../content/content.js', import.meta.url), 'utf8'));
 
 const handler = listeners[0];

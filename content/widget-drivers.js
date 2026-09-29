@@ -5,7 +5,7 @@
   const FAMILY_BY_KIND = Object.freeze({
     file: 'file-upload', richtext: 'rich-text', 'custom-select': 'virtual-select',
     'layui-date': 'date-picker', 'native-select': 'native-select', checkbox: 'toggle',
-    'moka-date': 'date-picker',
+    'moka-date': 'date-picker', 'beisen-date': 'date-picker', 'feishu-date-range': 'date-range',
     'custom-checkbox': 'toggle', radio: 'choice', 'custom-radio': 'choice',
     date: 'date-input', combobox: 'autocomplete', overlay: 'overlay-container',
     'option-item': 'overlay-option', 'picker-column': 'picker-column', action: 'action',
@@ -27,6 +27,7 @@
     if (family === 'file-upload') return ['UPLOAD_FILE'];
     if (family === 'overlay-container') return [];
     if (family === 'date-picker') return ['PICK_DATE'];
+    if (family === 'date-range') return ['TYPE_TEXT'];
     if (family === 'virtual-select' || family === 'section-entry') return ['CLICK'];
     if (readonly && String(tagName || '').toLowerCase() !== 'select') return ['CLICK'];
     if (family === 'date-input') return ['TYPE_TEXT', 'CLICK'];
