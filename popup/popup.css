@@ -154,6 +154,65 @@ body {
   color: var(--text-secondary);
 }
 
+.todo-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.todo-title { font-size: 13px; font-weight: 600; }
+.todo-description { margin-top: 3px; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
+.todo-summary { color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
+
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+}
+
+.todo-empty {
+  color: var(--text-tertiary);
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  padding: 10px;
+  font-size: 11px;
+}
+
+.todo-card {
+  border: 1px solid var(--border-light);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  padding: 9px;
+  background: var(--bg-secondary);
+}
+
+.todo-card.ready { border-left-color: var(--accent); }
+.todo-card.done { border-left-color: var(--success); }
+.todo-card.missing { border-left-color: var(--warning); }
+.todo-card.conflict { border-left-color: var(--danger); }
+.todo-card.blocked { border-left-color: var(--text-tertiary); }
+
+.todo-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.todo-section { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-badge { flex: 0 0 auto; color: var(--accent); background: var(--accent-bg); border-radius: 999px; padding: 2px 6px; font-size: 10px; }
+.todo-card.done .todo-badge { color: var(--success); background: var(--success-bg); }
+.todo-card.missing .todo-badge { color: var(--warning); background: var(--warning-bg); }
+.todo-card.conflict .todo-badge { color: var(--danger); background: var(--danger-bg); }
+.todo-card.blocked .todo-badge { color: var(--text-secondary); background: var(--bg-tertiary); }
+
+.todo-meta, .todo-next, .todo-reason { margin-top: 5px; font-size: 11px; line-height: 1.4; }
+.todo-meta { color: var(--text-tertiary); }
+.todo-next { color: var(--text-primary); font-weight: 500; }
+.todo-reason { color: var(--text-secondary); }
+
+.todo-fields { margin-top: 7px; display: flex; flex-direction: column; gap: 3px; list-style: none; }
+.todo-fields li { display: flex; gap: 7px; justify-content: space-between; font-size: 10px; color: var(--text-secondary); }
+.todo-field-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.todo-field-status { flex: 0 0 auto; color: var(--accent); }
+.todo-field-more { color: var(--text-tertiary); }
+
 .json-actions { display: flex; gap: 8px; }
 .json-actions .btn { flex: 1; text-align: center; }
 

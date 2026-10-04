@@ -20,6 +20,8 @@ const html = `<!DOCTYPE html><html><body>
     <div><input id="moka-school-search" type="text" placeholder="请输入就读学校" value="示例大学" /><span id="moka-school-clear"></span><div class="school-suggestions">示例大学继续教育学院</div></div>
     <input id="moka-year" type="text" placeholder="年" />
     <div class="moka-field"><span>学历</span><div><span>硕士</span><input id="moka-select" type="text" placeholder="请选择" /></div></div>
+    <div class="moka-field"><span>是否有亲属在本公司任职</span><div><input id="moka-relative" type="text" placeholder="请选择" /><div id="moka-relative-list" style="display:none"><div>是</div><div>否</div></div></div></div>
+    <div class="apply-field-test"><div class="title-test"><span>第一意向工作地点</span><span class="required-asterisk-test"></span></div><div><input id="moka-required-city" type="text" placeholder="请选择" /></div></div>
     <div><input id="moka-code" type="text" value="+86" /><input id="moka-phone" type="text" placeholder="请输入手机号" /></div>
     <div>教育背景</div>
     <div class="mFormTime">
@@ -99,6 +101,8 @@ const longYearRes = await new Promise((resolve) => handler({ type: 'SNAPSHOT_REQ
 window.document.getElementById('name').value = '已有姓名';
 await new Promise((resolve) => handler({ type: 'CLOSE_TRANSACTIONS' }, {}, resolve));
 const afterCloseRes = await new Promise((resolve) => handler({ type: 'SNAPSHOT_REQUEST' }, {}, resolve));
+window.document.getElementById('moka-relative-list').style.display = 'block';
+const classlessSelectRes = await new Promise((resolve) => handler({ type: 'SNAPSHOT_REQUEST' }, {}, resolve));
 
 
 console.log('识别到控件数:', res.count);
@@ -110,8 +114,8 @@ for (const el of res.elements) {
 const byLabel = (t) => res.elements.find((e) => e.label.includes(t));
 const checks = [
   ['姓名 是普通 input', byLabel('请输入姓名')?.kind === 'input'],
-  ['出生日期 判定为 date', byLabel('出生日期')?.kind === 'date'],
-  ['只读日期框只能 CLICK', JSON.stringify(byLabel('出生日期')?.operations) === '["CLICK"]'],
+  ['Moka 出生日期判定为确定性日期选择器', byLabel('出生日期')?.kind === 'moka-date'],
+  ['Moka 出生日期只走 PICK_DATE 事务', JSON.stringify(byLabel('出生日期')?.operations) === '["PICK_DATE"]'],
   ['Moka 完整日期使用确定性日期执行器', res.elements.some((e) => e.label === '毕业时间' && e.kind === 'moka-date' && JSON.stringify(e.operations) === '["PICK_DATE"]')],
   ['电子邮箱 可输入', (byLabel('电子邮箱')?.operations || []).includes('TYPE_TEXT')],
   ['原生下拉 kind=native-select', res.elements.some(e => e.kind === 'native-select')],
@@ -134,14 +138,21 @@ const checks = [
   ['Moka 日期型重复记录附带稳定索引',
     res.elements.filter((e) => ['入学年份','入学月份','毕业年份','毕业月份'].includes(e.label)).every(e => e.recordIndex === 0)],
   ['Moka “请选择”输入框识别为自定义选择器', res.elements.some((e) => e.label === '学历' && e.kind === 'custom-select')],
+  ['Moka 自定义选择器声明真实指针点击策略',
+    res.elements.some((e) => e.label === '学历' && e.kind === 'custom-select' && e.clickMode === 'trusted-pointer')],
   ['Moka 自定义选择器从同级节点回读已选值', res.elements.some((e) => e.label === '学历' && e.value === '硕士')],
   ['Moka 无 placeholder 的国家区号根据同组手机框识别', res.elements.some((e) => e.label === '国家区号' && e.value === '+86')],
+  ['Moka 用 CSS 星号标记的必填选择器被识别', res.elements.some(e => e.label === '第一意向工作地点' && e.required === true)],
   ['富文本判定为 richtext', byLabel('自我介绍')?.kind === 'richtext'],
   ['Ant Mobile 下拉识别为自定义选择器', byLabel('政治面貌')?.kind === 'custom-select'],
   ['Ant Mobile 下拉继承同一行字段标题', byLabel('政治面貌')?.label === '政治面貌'],
   ['Ant Mobile 日期选择器识别为自定义选择器', res.elements.some((e) => e.label === '出生日期' && e.kind === 'custom-select')],
   ['浮层选项被采集（男）', res.elements.some((e) => e.context === 'popup' && e.label === '男')],
   ['浮层选项标记 context=popup', res.elements.some((e) => e.context === 'popup')],
+  ['Moka 浮层选项声明真实指针点击策略',
+    res.elements.some((e) => e.context === 'popup' && e.label === '男' && e.clickMode === 'trusted-pointer')],
+  ['Moka 无弹层类名的相邻下拉仍可读取“否”选项',
+    classlessSelectRes.elements.some((e) => e.context === 'popup' && e.label === '否' && e.operations.includes('CLICK'))],
   ['Moka 长年份下拉不会截断目标年份', longYearRes.elements.some((e) => e.context === 'popup' && e.label === '2025')],
   ['Moka 重复年份在浮层快照中去重', longYearRes.elements.filter((e) => e.context === 'popup' && e.label === '2025').length === 1],
   ['关闭选择浮层后保留已有字段', !afterCloseRes.elements.some((e) => e.context === 'popup' && e.label === '2025') &&
@@ -151,7 +162,7 @@ const checks = [
   ['视口外字段仍被采集', res.elements.some((e) => e.label === '视口外的详细地址')],
   ['视口外字段带 offscreen 标记', byLabel('视口外的详细地址')?.offscreen === true],
   ['视口内字段不带 offscreen 标记', byLabel('电子邮箱')?.offscreen === undefined],
-  ['诊断：DOM 内输入控件计数正确', res.diagnostics?.inputs === 21],
+  ['诊断：DOM 内输入控件计数正确', res.diagnostics?.inputs === 23],
   ['诊断：识别到疑似封闭 Shadow Host', (res.diagnostics?.suspectedClosedShadowHosts || []).includes('my-widget')],
   ['诊断：带回当前页面 URL', /about:blank|^file|^http/.test(res.diagnostics?.url || '')],
   ['模板 noscript 文案未进入 Jev 页面文本', !res.page?.text.includes('You need to enable JavaScript to run this app.')],
@@ -161,6 +172,13 @@ const checks = [
   ,['亲属单选题带 relative-employment 规则标记', res.elements.some((e) => e.role === 'radio' && e.formRuleSignals?.includes('relative-employment'))]
   ,['亲属“否”单选项带原始取值', res.elements.some((e) => e.role === 'radio' && e.optionValue === '否')]
 ];
+
+const mokaDegree = res.elements.find((e) => e.label === '学历' && e.kind === 'custom-select');
+const mokaTrustedPoint = await new Promise((resolve) => handler({
+  type:'TRUSTED_CLICK_POINT', index:mokaDegree?.index
+}, {}, resolve));
+checks.push(['Moka 选择器可提供浏览器层真实点击坐标',
+  mokaTrustedPoint?.ok === true && mokaTrustedPoint?.clickMode === 'trusted-pointer']);
 
 console.log('\n=== 断言 ===');
 let pass = true;

@@ -217,6 +217,12 @@
             "enum": ["大专", "本科", "硕士", "博士", ""],
             "examples": ["本科"]
           },
+          "studyMode": {
+            "type": "string",
+            "title": "学习方式／教育形式",
+            "enum": ["全日制", "非全日制", "在职", "", "海外留学生", "港澳台留学生"],
+            "examples": ["全日制"]
+          },
           "degree": { "type": "string", "title": "学位", "examples": ["工学"] },
           "primaryDiscipline": { "type": "string", "title": "一级学科分类", "examples": ["计算机科学与技术"] },
           "startDate": { "type": "string", "title": "开始时间", "examples": ["2016-09"] },
@@ -274,6 +280,9 @@
           "startDate": { "type": "string", "title": "开始时间" },
           "endDate": { "type": "string", "title": "结束时间" },
           "summary": { "type": "string", "title": "实习描述" },
+          "responsibilities": { "type": "string", "title": "工作职责" },
+          "deliverables": { "type": "string", "title": "交付结果" },
+          "outcomes": { "type": "string", "title": "实习成果" },
           "department": { "type": "string", "title": "部门" },
           "location": { "type": "string", "title": "实习地点", "examples": ["深圳"] },
           "isPresent": { "type": "boolean", "title": "是否仍在职" },
@@ -295,6 +304,9 @@
           "startDate": { "type": "string", "title": "开始时间" },
           "endDate": { "type": "string", "title": "结束时间", "examples": ["至今"] },
           "summary": { "type": "string", "title": "工作描述" },
+          "responsibilities": { "type": "string", "title": "工作职责" },
+          "deliverables": { "type": "string", "title": "交付结果" },
+          "outcomes": { "type": "string", "title": "工作成果" },
           "department": { "type": "string", "title": "部门" },
           "location": { "type": "string", "title": "工作地点", "examples": ["上海"] },
           "isPresent": { "type": "boolean", "title": "是否仍在职" },
@@ -312,10 +324,13 @@
         "properties": {
           "name": { "type": "string", "title": "项目名" },
           "role": { "type": "string", "title": "担任角色" },
+          "responsibilities": { "type": "string", "title": "项目负责内容" },
           "startDate": { "type": "string" },
           "endDate": { "type": "string" },
           "location": { "type": "string", "title": "项目地点" },
           "description": { "type": "string", "title": "项目描述" },
+          "deliverables": { "type": "string", "title": "交付结果" },
+          "outcomes": { "type": "string", "title": "项目成果" },
           "techStack": { "type": "array", "title": "技术栈", "items": { "type": "string" } }
         }
       }

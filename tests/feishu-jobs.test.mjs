@@ -160,7 +160,7 @@ assert.deepEqual(schoolSearchPlan.actions.map(action => ({target:action.target, 
 }], '飞书通用搜索框应保持学校字段的选择器事务');
 
 const schoolChoicePlan = buildActionPlan([
-  {index:'school', section:'教育经历', label:'学校名称', kind:'input', operations:['TYPE_TEXT'], value:'香港示例大学'},
+  {index:'school', section:'教育经历', label:'学校名称', kind:'input', fieldProtocol:'search-select', valueCommitted:false, operations:['TYPE_TEXT'], value:'香港示例大学'},
   {index:'choice', section:'教育经历', label:'香港示例大学', kind:'option-item', context:'popup', operations:['CLICK'], value:''}
 ], resume, [{kind:'type_text', context:'popup', resumeField:'education[0].institution', label:'学校名称'}],
 {title:'教育经历', platform:'feishu-jobs'});

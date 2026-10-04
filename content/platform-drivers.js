@@ -282,7 +282,33 @@
     closeTransactions() { return 0; }
   });
 
-  const drivers = [beisen, feishu];
+  // Moka 的选择器由 React 组件接管：页面只会响应浏览器派发的真实指针事务。
+  // 将执行要求标在控件快照上，调度层继续沿用统一的 CLICK / PICK_DATE 动作。
+  const moka = Object.freeze({
+    id: 'moka-form',
+    matches(hostname, doc) {
+      return /(^|\.)mokahr\.com$/i.test(hostname) ||
+        !!doc?.querySelector?.('[class*="sd-Select-container-"]');
+    },
+    annotateRecords(items) {
+      for (const { entry } of items) {
+        const canClick = (entry.operations || []).includes('CLICK');
+        if (!canClick && !['moka-date'].includes(entry.kind)) continue;
+        // Moka 会将弹层选项渲染成 div、button 或带 role 的普通节点。
+        // 依据弹层上下文统一标注，确保每一种选项都使用浏览器指针事务。
+        const selectable = entry.context === 'popup' && canClick;
+        const trigger = entry.context !== 'popup' &&
+          ['custom-select', 'combobox', 'moka-date'].includes(entry.kind);
+        // 触发器和选项都需要浏览器层面的真实点击。内容脚本会把弹层选项的
+        // 点击点收窄到最内层文字节点，保证“硕士”、年份和月份命中当前项。
+        if (selectable) entry.clickMode = 'trusted-pointer';
+        else if (trigger) entry.clickMode = 'trusted-pointer';
+      }
+    },
+    closeTransactions() { return 0; }
+  });
+
+  const drivers = [beisen, feishu, moka];
   function current(hostname, doc) {
     return drivers.find(driver => driver.matches(hostname, doc)) || null;
   }

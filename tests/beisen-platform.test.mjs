@@ -58,13 +58,13 @@ assert.equal(countRenderedRecords('获奖情况', sectionRecords('获奖情况')
 
 const projectPlan = buildActionPlan(before.elements.filter(element => element.section === '项目经历'), {
   projects:[
-    {name:'项目一', role:'负责人', startDate:'2024-01-01'},
-    {name:'项目二', role:'开发', startDate:'2024-02-01'},
-    {name:'项目三', role:'研究员', startDate:'2024-03-01'}
+    {name:'项目一', responsibilities:'负责人', startDate:'2024-01-01'},
+    {name:'项目二', responsibilities:'开发', startDate:'2024-02-01'},
+    {name:'项目三', responsibilities:'研究员', startDate:'2024-03-01'}
   ]
 }, [], {title:'项目经历', platform:'beisen'});
 assert.deepEqual(projectPlan.actions.filter(action => action.label === '项目中职责').map(action => action.resumeField), [
-  'projects[0].role','projects[1].role','projects[2].role'
+  'projects[0].responsibilities','projects[1].responsibilities','projects[2].responsibilities'
 ]);
 
 const languagePlan = buildActionPlan(before.elements.filter(element => element.section === '语言能力'), {

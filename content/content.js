@@ -3,7 +3,7 @@
 
 (function () {
   // Popup 在扩展重载后用此版本识别遗留页面中的旧 content script，并主动替换。
-  const CONTENT_SCRIPT_VERSION = '2026-09-28.37';
+  const CONTENT_SCRIPT_VERSION = '2026-09-30.61';
   const previousContentVersion = globalThis.__jevResumeFillerContentVersion;
   if (previousContentVersion && previousContentVersion !== CONTENT_SCRIPT_VERSION) {
     // Chrome 重载扩展时会保留页面隔离世界。释放旧实例的注册标记，让新代码
@@ -53,6 +53,7 @@
     '专业技能', '其他信息', '开放性问题', '附件', '简历附件', '陈述情况',
     '个人基本信息', '奖励活动', '社会实践经历', '所获证书', '附加信息', '家庭关系', '获奖情况',
     '英语能力', '其他外语能力', '计算机技能', '证书', '校内职务', '培训经历',
+    '个人专利', '发明专利', '专利', '论文著作', '论文', '发表论文',
     '其他家庭成员关系', '自我评价', '个人承诺', '基本信息', '基础信息', '附件简历', '获奖', '作品', '社交账号'
   ]);
 
@@ -128,7 +129,7 @@
     return !!value && value.length <= 80 && !FORM_SECTION_TITLES.has(value) &&
       !/^(?:必填项未填写|请选择|上传|上传中|添加|删除|请输入|暂无选项|错误|格式错误)(?:[：:].*)?$/.test(value) &&
       !/^(?:如果您|如有多个|如大学|如中国|支持文档|（附免冠照片）)/.test(value) &&
-      !/^(?:\d{4}年?|\d{1,2}月?)$/.test(value);
+      !/^(?:\d{4}年?|\d{1,2}月?|\d+\s*\/\s*\d+)$/.test(value);
   }
 
   function nearestFieldCaption(el) {
@@ -206,7 +207,8 @@
       if (fieldContainer?.querySelector('input:not([type="hidden"]),textarea,select,[role="combobox"]')) return false;
       const text = tidyLabel(el.textContent || '');
       if (text.length < 2 || text.length > 14) return false;
-      if (!/(信息|经历|背景|经验|能力|技能|证书|奖项|成果|项目|实践|作品|上传|确认|意向|声明|教育|工作|实习|培训|语言|资格|家庭|校园|开放|附件)/.test(text)) return false;
+      if (/^(?:\+?\s*)?(?:新增|添加|增加|编辑|删除)/.test(text)) return false;
+      if (!/(信息|经历|背景|经验|能力|技能|证书|奖项|成果|项目|实践|作品|上传|确认|意向|声明|教育|工作|实习|培训|语言|资格|家庭|校园|开放|附件|专利|论文|著作)/.test(text)) return false;
       return !Array.from(el.children).some(child => tidyLabel(child.textContent || '') === text);
     });
     sectionMarkers = [...new Set([...known, ...dynamic])]
@@ -229,6 +231,21 @@
       else if (found) break;
     }
     return found;
+  }
+
+  // 新增入口的文字本身常携带分区名称，例如“新增发明专利”。这类页面把多个
+  // 空分区并排渲染时，入口自身是最稳定的归属证据，优先于相邻标题的位置关系。
+  function repeaterSectionFromLabel(label) {
+    const compact = tidyLabel(label || '').replace(/\s/g, '');
+    if (!/^(?:\+)?(?:新增|添加|增加)/.test(compact)) return '';
+    const aliases = [
+      ['发明专利', '发明专利'], ['个人专利', '个人专利'], ['论文著作', '论文著作'], ['论文', '论文'],
+      ['获奖经历', '获奖经历'], ['获奖情况', '获奖情况'], ['教育经历', '教育经历'], ['教育背景', '教育背景'],
+      ['实习经历', '实习经历'], ['工作经历', '工作经历'], ['项目经验', '项目经验'], ['项目经历', '项目经历'],
+      ['语言能力', '语言能力'], ['英语能力', '英语能力'], ['社会实践经历', '社会实践经历'],
+      ['校内实践经历', '校内实践经历'], ['培训经历', '培训经历'], ['证书', '证书']
+    ];
+    return aliases.find(([alias]) => compact.includes(alias))?.[1] || '';
   }
 
   function activeSectionTitle() {
@@ -688,6 +705,60 @@
   // 日期型记录以每条的起止年月为边界，语言型记录以语言名称为边界。
   function annotateMokaRecordMetadata(items) {
     if (!isMokaFormPage()) return;
+    // Moka 经常把“硕士／本科”资料直接放在「个人信息」中，而不是另起教育
+    // 分区。页面中的年、月输入没有 name 或标题，按照这两组表单的 DOM 顺序
+    // 恢复教育记录后，每一个选择器都能绑定到唯一的 JSON 字段。
+    // 选择最高学历后，Moka 会在原表单的不同 DOM 容器中异步插入“硕士／本科”
+    // 字段。插入容器未必继承“个人信息”标题，所以用字段前缀作为教育记录的
+    // 稳定边界；这样扫描时无论页面如何拆分区域，都能恢复两条教育经历。
+    const isPersonalDegreeControl = entry => /^(本科|硕士|博士)(?:学校|专业|学历|开始时间|结束时间)/
+      .test(tidyLabel(entry.label || entry.placeholder || ''));
+    const personalEducation = items.filter(item => item.entry.context !== 'popup' &&
+      (item.entry.section === '个人信息' || isPersonalDegreeControl(item.entry)));
+    const recordByDegree = new Map();
+    let activePersonalRecord = null;
+    for (const {entry} of personalEducation) {
+      const label = tidyLabel(entry.label || entry.placeholder || '');
+      const degree = label.match(/^(本科|硕士|博士)(?:学校|专业|学历|开始时间|结束时间)/)?.[1];
+      if (degree) {
+        if (!recordByDegree.has(degree)) recordByDegree.set(degree, recordByDegree.size);
+        activePersonalRecord = recordByDegree.get(degree);
+        entry.mokaDegree = degree;
+      }
+      if (Number.isInteger(activePersonalRecord)) entry.recordIndex = activePersonalRecord;
+      if (/^(本科|硕士|博士)学校(?:[（(]?全称[）)]?)?$/.test(label)) entry.label = '学校名称';
+      if (/^(本科|硕士|博士)专业(?:[（(]?全称[）)]?)?$/.test(label)) entry.label = '专业名称';
+      if (/^(本科|硕士|博士)学历性质$/.test(label)) {
+        entry.mokaDateAnchor = true;
+        entry.label = '学习方式';
+      }
+    }
+    const personalDateLabels = ['入学年份','入学月份','毕业年份','毕业月份'];
+    let pendingDateRecord = null;
+    let pendingDateSlot = 0;
+    for (const {stateEl, entry} of personalEducation) {
+      const originalLabel = tidyLabel(entry.label || entry.placeholder || '');
+      const degree = entry.mokaDegree;
+      if (degree) activePersonalRecord = recordByDegree.get(degree);
+      if (entry.mokaDateAnchor || originalLabel === '学习方式') {
+        // 每段学历的“学历性质”后在同一容器里固定出现起始年、月、结束年、月。
+        // Moka 选中后会移除 input 的“年／月”占位，因此以这个顺序保持稳定身份。
+        pendingDateRecord = activePersonalRecord;
+        pendingDateSlot = 0;
+        continue;
+      }
+      if (!Number.isInteger(pendingDateRecord) || pendingDateSlot >= personalDateLabels.length) continue;
+      const input = stateEl?.matches?.('input[placeholder="年"],input[placeholder="月"]') ? stateEl :
+        stateEl?.querySelector?.('input[placeholder="年"],input[placeholder="月"]');
+      const unit = tidyLabel(input?.getAttribute?.('placeholder') || entry.placeholder || '');
+      const selectedNumber = entry.kind === 'custom-select' && /^\d{1,4}$/.test(String(entry.value || originalLabel));
+      if (unit !== '年' && unit !== '月' && !selectedNumber) continue;
+      entry.recordIndex = pendingDateRecord;
+      entry.dateSlot = pendingDateSlot;
+      entry.label = personalDateLabels[pendingDateSlot];
+      pendingDateSlot += 1;
+      if (pendingDateSlot === personalDateLabels.length) pendingDateRecord = null;
+    }
     const dateGroupSize = new Map([
       ['教育背景', 4], ['教育经历', 4], ['实习经历', 4], ['工作经历', 4],
       ['项目经验', 4], ['项目经历', 4], ['获奖经历', 2]
@@ -741,6 +812,85 @@
         }
         if (metadata.get(node)!==null) { entry.recordIndex=metadata.get(node); break; }
       }
+    }
+  }
+
+  // 记录卡片的 DOM 外观各站不同，但字段锚点在校园招聘表单中相对稳定。
+  // 这层只补充还没有平台或容器证据的 recordIndex，已有标注始终优先保留。
+  function annotateSemanticRecords(items) {
+    const anchors = new Map([
+      ['教育背景', /^(?:学校|学校名称|学校全称|就读学校|毕业院校)$/],
+      ['教育经历', /^(?:学校|学校名称|学校全称|就读学校|毕业院校)$/],
+      ['实习经历', /^(?:公司|公司名称|单位|单位名称|企业名称)$/],
+      ['工作经历', /^(?:公司|公司名称|单位|单位名称|企业名称)$/],
+      ['实习/工作经历', /^(?:公司|公司名称|单位|单位名称|企业名称)$/],
+      ['项目经验', /^(?:项目名称|项目名)$/],
+      ['项目经历', /^(?:项目名称|项目名)$/],
+      ['语言能力', /^(?:语言|语种|语言类型|外语类型)$/],
+      ['获奖经历', /^(?:获奖项|获奖名称|奖项名称|奖励名称|奖项)$/],
+      ['获奖情况', /^(?:获奖项|获奖名称|奖项名称|奖励名称|奖项)$/],
+      ['校内实践经历', /^(?:组织名称|实践内容|职位名称|职务)$/],
+      ['家庭关系', /^(?:姓名|家属姓名|家庭成员姓名)$/]
+    ]);
+    for (const [section, anchor] of anchors) {
+      let activeRecord = -1;
+      let previousWasAnchor = false;
+      for (const {entry} of items.filter(item => item.entry.context !== 'popup' && item.entry.section === section)) {
+        const label = tidyLabel(entry.label || entry.placeholder || '').replace(/^请(?:输入|填写|选择)/, '').replace(/\s*[*＊]\s*$/, '');
+        const isAnchor = anchor.test(label);
+        if (isAnchor && !previousWasAnchor) activeRecord += 1;
+        previousWasAnchor = isAnchor;
+        if (activeRecord >= 0 && !Number.isInteger(entry.recordIndex) &&
+            !/^(?:\+\s*)?(?:添加|新增|增加)/.test(String(entry.label || '').replace(/\s/g, ''))) {
+          entry.recordIndex = activeRecord;
+        }
+      }
+    }
+  }
+
+  function fieldProtocol(entry) {
+    const operations = entry.operations || [];
+    if (operations.includes('UPLOAD_FILE') || entry.kind === 'file') return 'upload';
+    if (entry.kind === 'section-entry' || /^(?:\+\s*)?(?:添加|新增|增加)/.test(String(entry.label || '').replace(/\s/g, ''))) return 'repeater';
+    if (entry.kind === 'feishu-date-range') return 'date-range';
+    if (operations.includes('PICK_DATE') || /(?:date|时间|日期|年月)/i.test(`${entry.kind || ''} ${entry.label || ''}`) &&
+        ['date','beisen-date','moka-date','layui-date','feishu-year'].includes(entry.kind)) return 'date';
+    if (['checkbox','radio','custom-checkbox','custom-radio'].includes(entry.kind)) return 'choice';
+    if (entry.kind === 'combobox' && operations.includes('TYPE_TEXT')) return 'search-select';
+    if (['custom-select','native-select','combobox'].includes(entry.kind) || operations.includes('SELECT')) return 'select';
+    if (operations.includes('TYPE_TEXT') || ['input','textarea','richtext'].includes(entry.kind)) return 'direct-text';
+    return operations.includes('CLICK') ? 'navigation' : 'read-only';
+  }
+
+  function compoundGroupLabel(item, items) {
+    const label = tidyLabel(item.entry.label || item.entry.placeholder || '').replace(/^请(?:输入|填写|选择)/, '').replace(/\s*[*＊]\s*$/, '');
+    if (!/^(?:请选择|请输入|未选择|未填写)?$/.test(label)) return label || '(无标签)';
+    const nearby = items.filter(other => other !== item && other.entry.context !== 'popup' &&
+      other.entry.section === item.entry.section && Math.abs((other.entry.domOrder || 0) - (item.entry.domOrder || 0)) <= 2);
+    // 证件类型下拉与号码输入在许多网站共用一个表单项，其中下拉常只有“请选择”。
+    // 使用同一项内的明确证件标题建立复合事务，国家区号等其他“请选择”控件保持独立。
+    const certificate = nearby.find(other => /证件(?:类型|号码|号)/.test(
+      tidyLabel(other.entry.label || other.entry.placeholder || '').replace(/^请(?:输入|填写|选择)/, '')
+    ));
+    return certificate ? '证件号码' : label || '(无标签)';
+  }
+
+  // FieldGroup 把一个用户可见字段的多个 DOM 元素收敛为单一事务。例如“证件号码”
+  // 的类型下拉和号码输入框共用一个组；记录索引把每段教育／项目经历隔离开。
+  function annotateFieldGroups(items) {
+    const slots = new Map();
+    for (const item of items) {
+      const {entry} = item;
+      if (entry.context === 'popup') continue;
+      const label = compoundGroupLabel(item, items);
+      const section = tidyLabel(entry.section || '页面');
+      const record = Number.isInteger(entry.recordIndex) ? `record-${entry.recordIndex + 1}` : 'single';
+      const normalized = label.toLowerCase().replace(/[\s\-_/()（）【】\[\]{}:：,.，。'"`]+/g, '') || 'unlabeled';
+      const group = `${section}|${record}|${normalized}`;
+      entry.fieldGroup = group;
+      entry.fieldProtocol = fieldProtocol(entry);
+      entry.fieldSlot = slots.get(group) || 0;
+      slots.set(group, entry.fieldSlot + 1);
     }
   }
 
@@ -800,6 +950,15 @@
     const mokaPlaceholder = tidyLabel(el.getAttribute("placeholder") || "");
     const mokaFullDate = mokaHost && tag === "input" && isReadonly &&
       /日期（年月日）|日期\(年月日\)/.test(mokaPlaceholder);
+    // Moka 的出生日期没有稳定 placeholder，仍然是只读日期投影，必须通过
+    // 年份 → 月份 → 日期的面板事务提交；把它识别为普通 date 会误把面板标题
+    // 当作可选值。
+    const mokaDateInput = mokaHost && tag === 'input' &&
+      // Moka 的出生日期在不同租户中有两种实现：有的 input 为 readonly，
+      // 有的交由 React 接管、没有 readonly 属性。两者都通过年月面板完成选择，
+      // 因此以字段标题作为稳定证据。
+      DATE_HINT_RE.test(`${labelText} ${fieldText} ${nearestFieldCaption(el)}`) &&
+      !/^(?:年|月)$/.test(mokaPlaceholder);
     // Moka 的选择器使用普通、可写 input 承载当前值，没有 readonly、role 或
     // aria-haspopup。年/月和“请选择”类字段只能从弹层选择；把它们当文本框时，
     // input 事件会短暂出现但组件不会提交值。
@@ -829,7 +988,7 @@
     }
     if (tag === 'input' && /^请选择.*(?:户口|户籍|居住|籍贯|城市|地区)/.test(tidyLabel(el.getAttribute('placeholder') || '')))
       return 'custom-select';
-    if (mokaFullDate) return "moka-date";
+    if (mokaFullDate || mokaDateInput) return "moka-date";
     if (isAmListSelect(el)) return "custom-select";
     if (mokaSelectInput) return "custom-select";
     if (tag === 'input' && !isReadonly && el.closest('.el-autocomplete')) return 'combobox';
@@ -1038,6 +1197,20 @@
       overlays = [...document.querySelectorAll(OVERLAY_SELECTOR), ...(activeLayer ? [activeLayer] : [])];
     } catch (_) {
       return items;
+    }
+    // 部分 Moka 下拉直接在当前输入框旁边展开，不带 popup/listbox 类名。
+    // 聚焦控件附近出现至少两个独立、可见的短选项时，将这个局部容器作为
+    // 候选层采集；距离限制避免把整张表单当成下拉菜单。
+    if (isMokaFormPage()) {
+      for (const input of document.querySelectorAll('input[placeholder="请选择"]')) {
+        for (let parent = input.parentElement, depth = 0; parent && depth < 4;
+             parent = parent.parentElement, depth += 1) {
+          const choices = [...parent.querySelectorAll('div,span,li')].filter(node =>
+            node !== parent && isVisible(node) && !node.querySelector('div,span,li,input') &&
+            /^(?:是|否|有|无|接受|不接受)$/.test(tidyLabel(node.textContent || '')));
+          if (choices.length >= 2) { overlays.push(parent); break; }
+        }
+      }
     }
 
     overlays.forEach((overlay) => {
@@ -1368,6 +1541,12 @@
         value: stateEl?.closest?.('.apply-form-date-now')?.querySelector('.apply-form-date-now__ipt input')?.value === '至今' ? '至今' : opts.value,
         operations: opts.operations
       };
+      const dateInput = stateEl?.matches?.('input') ? stateEl : stateEl?.querySelector?.('input');
+      const datePlaceholder = tidyLabel(dateInput?.getAttribute?.('placeholder') || '');
+      if (kind === 'date' && (String(dateInput?.getAttribute?.('type') || '').toLowerCase() === 'month' ||
+          /^(?:开始月|结束月|入学月|毕业月|年月|YYYY-MM)$/.test(datePlaceholder))) {
+        entry.datePrecision = 'month';
+      }
       entry.pickerBranch = opts.context === 'popup' && !!(stateEl?.hasAttribute?.('aria-expanded') ||
         stateEl?.querySelector?.('[class*="youcejiantou"]') ||
         Array.from(stateEl?.parentElement?.children || []).some(peer=>peer!==stateEl && peer.querySelector?.('[class*="youcejiantou"]'))) &&
@@ -1375,7 +1554,8 @@
       entry.widgetFamily = widgetDrivers.classify({
         kind, role, tagName: stateEl?.tagName, editable: stateEl ? isEditableEl(stateEl) : false
       });
-      const section = opts.section || sectionForElement(targetEl || stateEl);
+      const repeaterSection = repeaterSectionFromLabel(opts.label);
+      const section = opts.section || repeaterSection || sectionForElement(targetEl || stateEl);
       if (section) entry.section = section;
       // 飞书的自我评价 textarea 常只有通用占位“请输入”，字段标题位于分区头部。
       // 该分区仅承载这一项文本，因此使用分区标题恢复稳定字段语义。
@@ -1389,7 +1569,8 @@
         for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
           const controls = node.querySelectorAll('input,textarea,select').length;
           const caption = Array.from(node.children).find(child => !child.contains(stateEl) &&
-            /\*/.test(String(child.innerText || child.textContent || '').slice(0, 120)));
+            (/\*/.test(String(child.innerText || child.textContent || '').slice(0, 120)) ||
+              !!child.querySelector?.('[class*="required"]')));
           if (controls <= 3 && caption) { mokaRequired = true; break; }
           if (controls > 3) break;
         }
@@ -1402,7 +1583,7 @@
           if (captions.some(child => /(?:^\s*[*＊]|[*＊]\s*$)/.test(String(child.innerText || child.textContent || '')) ||
               /^(?:\*|＊)$/.test(tidyLabel(child.textContent || '')) ||
               child.matches('.is-required,[class*="required"],[class*="bitian"]') ||
-              child.querySelector('.ant-form-item-required,.is-required,[aria-required="true"]'))) {
+              child.querySelector('.ant-form-item-required,.is-required,[aria-required="true"],[class*="required"]'))) {
             localRequired = true;
             break;
           }
@@ -1586,6 +1767,13 @@
         let kind = deriveKind(el, role);
         const feishuHost = feishuComboboxHost(el);
         const label = feishuHost ? deriveLabel(feishuHost) || deriveLabel(el) : deriveLabel(el);
+        // 学校名称通常是“输入关键词 → 选择联想结果”的控件。部分 ATS 没有
+        // aria-autocomplete 或专用容器，外观会退化成普通 text input；根据字段
+        // 语义将其归入 autocomplete 协议，保证输入后仍会等待候选项确认。
+        const schoolLookup = /^(?:学校名称|学校全称|就读学校|毕业院校|院校名称|学校)$/;
+        if (kind === 'input' && role === 'textbox' && !el.hasAttribute('readonly') && schoolLookup.test(tidyLabel(label))) {
+          kind = 'combobox';
+        }
         // 360/北森的年月控件与普通下拉共享 DOM 外形，字段标题才是稳定语义。
         if (/(^|\.)zhiye\.com$/i.test(location.hostname) && kind === 'custom-select' &&
             DATE_HINT_RE.test(label)) kind = 'beisen-date';
@@ -1686,8 +1874,9 @@
     const allEntriesInDomOrder = [...inView, ...offView].sort((a, b) =>
       (a.entry.domOrder ?? 0) - (b.entry.domOrder ?? 0));
     annotateMokaRecordMetadata(allEntriesInDomOrder);
-    annotateRepeatedContainers(allEntriesInDomOrder);
     platformDrivers.annotateRecords(allEntriesInDomOrder, location.hostname, document);
+    annotateSemanticRecords(allEntriesInDomOrder);
+    annotateRepeatedContainers(allEntriesInDomOrder);
     const dateLabels = {
       '教育背景':['入学年份','入学月份','毕业年份','毕业月份'],
       '教育经历':['入学年份','入学月份','毕业年份','毕业月份'],
@@ -1714,6 +1903,7 @@
         entry.label = labels[slot];
       });
     }
+    annotateFieldGroups(allEntriesInDomOrder);
 
     // 视口内的排在前面，超量时优先保留视口内的字段
     const allEntries = [...inView, ...offView];
@@ -1950,20 +2140,40 @@
     return hit && (el.contains(hit) || hit.contains(el)) ? hit : el;
   }
 
+  function mokaPopupOptionTarget(el, label) {
+    const expected = tidyLabel(label || el?.innerText || el?.textContent || '');
+    const candidates = [el, ...Array.from(el?.querySelectorAll?.('*') || [])].filter(node => {
+      if (!isVisible(node) || tidyLabel(node.innerText || node.textContent || '') !== expected) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 1 && rect.height > 1;
+    });
+    return candidates.sort((left, right) => {
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      const leftArea = leftRect.width * leftRect.height;
+      const rightArea = rightRect.width * rightRect.height;
+      return leftArea - rightArea || left.querySelectorAll('*').length - right.querySelectorAll('*').length;
+    })[0] || el;
+  }
+
   function trustedClickPoint(index) {
     const pos = parseInt(index, 10) - 1;
     const el = elementRegistry[pos];
     const meta = elementMetaRegistry[pos] || {};
     if (!el) return {ok:false,reason:`元素 ${index} 不在注册表`};
-    if (!isFeishuJobsPage() || meta.clickMode !== 'trusted-pointer') {
+    if (meta.clickMode !== 'trusted-pointer') {
       return {ok:false,reason:'当前控件不需要真实指针点击'};
     }
     safeScrollIntoView(el);
-    const clickTarget = feishuCardPointerTarget(el, meta.clickLabel || meta.label, meta.label);
+    const clickTarget = isFeishuJobsPage()
+      ? feishuCardPointerTarget(el, meta.clickLabel || meta.label, meta.label)
+      : isMokaFormPage() && meta.context === 'popup'
+        ? mokaPopupOptionTarget(el, meta.label)
+      : el;
     safeScrollIntoView(clickTarget);
     const rect = clickTarget?.getBoundingClientRect?.();
     if (!rect.width || !rect.height || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) {
-      return {ok:false,reason:'飞书卡片未处于可点击布局'};
+      return {ok:false,reason:'控件未处于可点击布局'};
     }
     return {
       ok:true,
@@ -1971,6 +2181,113 @@
       point:{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2},
       label:meta.label || tidyLabel(clickTarget?.textContent || '')
     };
+  }
+
+  function mokaDateNextPoint(index, value) {
+    const pos = parseInt(index, 10) - 1;
+    const el = elementRegistry[pos];
+    const match = String(value || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (!el || !match) return {ok:false,reason:'Moka 日期目标或日期值无效'};
+    if (!isMokaFormPage() || deriveKind(el, deriveRole(el)) !== 'moka-date') {
+      return {ok:false,reason:'当前控件不属于 Moka 日期选择器'};
+    }
+    const expectedMonth = `${match[1]}-${match[2].padStart(2,'0')}`;
+    const actual = String(el.value || '').trim();
+    if (actual.startsWith(expectedMonth)) return {ok:true,done:true,value:actual};
+
+    // 日期面板由 portal 渲染，并且每一次点击都会替换节点；每一轮都重新读取
+    // 可见文本，向后台交出一个需要真实指针点击的单一步骤。
+    visibilityCache = new Map();
+    const visibleExact = text => Array.from(document.querySelectorAll('body *')).filter(node => {
+      if (!isVisible(node) || tidyLabel(node.innerText || node.textContent || '') !== text) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    }).sort((left,right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length);
+    const pointFor = (node,label) => {
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      return {ok:true,done:false,label,point:{x:rect.left + rect.width / 2,y:rect.top + rect.height / 2}};
+    };
+    const months = ['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+    const all = Array.from(document.querySelectorAll('body *')).filter(node => {
+      if (!isVisible(node)) return false;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+    const labels = all.map(node => tidyLabel(node.innerText || node.textContent || ''));
+    const header = labels.find(text => /^\d{4}\s*-\s*\d{4}$/.test(text)) ||
+      labels.find(text => /^\d{4}\s*年$/.test(text));
+    if (!header) return {ok:false,reason:'Moka 日期面板未显示年份标题'};
+    const headerNode = visibleExact(header)[0];
+    if (/^\d{4}\s*年$/.test(header) && months.filter(month => labels.includes(month)).length >= 3) {
+      const shownYear = Number(header.match(/\d{4}/)?.[0]);
+      if (shownYear === Number(match[1])) {
+        const targetMonth = months[Number(match[2]) - 1];
+        return pointFor(visibleExact(targetMonth)[0],targetMonth) ||
+          {ok:false,reason:`Moka 日期月份没有可点击坐标：${targetMonth}`};
+      }
+      return pointFor(headerNode,header) || {ok:false,reason:'Moka 日期年份标题没有可点击坐标'};
+    }
+
+    const yearNodes = all.filter(node => /^\d{4}$/.test(tidyLabel(node.innerText || node.textContent || '')))
+      .sort((left,right) => left.querySelectorAll('*').length - right.querySelectorAll('*').length);
+    const targetYear = String(match[1]);
+    const target = yearNodes.find(node => tidyLabel(node.innerText || node.textContent || '') === targetYear);
+    if (target) return pointFor(target,targetYear) || {ok:false,reason:'Moka 目标年份没有可点击坐标'};
+    if (!/^\d{4}\s*-\s*\d{4}$/.test(header)) {
+      return {ok:false,reason:'Moka 年份面板未显示可选年份'};
+    }
+
+    const headerRect = headerNode?.getBoundingClientRect();
+    let arrows = ['','','',''].flatMap(glyph => visibleExact(glyph))
+      .filter((node,pos,nodes) => nodes.indexOf(node) === pos)
+      .sort((left,right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        const leftDistance = headerRect ? Math.abs(leftRect.top - headerRect.top) : 0;
+        const rightDistance = headerRect ? Math.abs(rightRect.top - headerRect.top) : 0;
+        return leftDistance - rightDistance || leftRect.left - rightRect.left;
+      });
+    if (arrows.length < 2 && headerNode && headerRect) {
+      // 有些 Moka 版本把箭头画在 ::before / ::after 中，可访问树有名称而
+      // textContent 为空。标题与年份格共同确定弹层后，标题同一行两侧的小
+      // 元素就是翻页入口，使用面板内的几何位置可稳定定位它们。
+      let panel = headerNode.parentElement;
+      while (panel && panel !== document.body) {
+        const rect = panel.getBoundingClientRect();
+        const panelYears = Array.from(panel.querySelectorAll('*')).filter(node =>
+          /^\d{4}$/.test(tidyLabel(node.innerText || node.textContent || ''))).length;
+        if (rect.width >= 180 && rect.width <= 520 && rect.height >= 90 && rect.height <= 680 && panelYears >= 4) break;
+        panel = panel.parentElement;
+      }
+      if (panel && panel !== document.body) {
+        const panelRect = panel.getBoundingClientRect();
+        const headerCenter = headerRect.left + headerRect.width / 2;
+        arrows = Array.from(panel.querySelectorAll('*')).filter(node => {
+          if (!isVisible(node) || node === headerNode || node.contains(headerNode)) return false;
+          const rect = node.getBoundingClientRect();
+          const centerY = rect.top + rect.height / 2;
+          const centerX = rect.left + rect.width / 2;
+          if (rect.width < 6 || rect.height < 6 || rect.width > 96 || rect.height > 72) return false;
+          if (Math.abs(centerY - (headerRect.top + headerRect.height / 2)) > 42) return false;
+          return centerX < headerCenter - 22 || centerX > headerCenter + 22;
+        }).filter((node,pos,nodes) => !nodes.some((other,i) => i < pos && other.contains(node)))
+          .sort((left,right) => left.getBoundingClientRect().left - right.getBoundingClientRect().left);
+        // 面板边界检查避免标题同一行其他字段的装饰元素混入。
+        arrows = arrows.filter(node => {
+          const rect = node.getBoundingClientRect();
+          return rect.left >= panelRect.left - 1 && rect.right <= panelRect.right + 1;
+        });
+      }
+    }
+    if (arrows.length < 2) return {ok:false,reason:'Moka 日期年份层缺少翻页按钮'};
+    const [from,to] = header.match(/\d{4}/g).map(Number);
+    const direction = Number(targetYear) < from ? -1 : Number(targetYear) > to ? 1 : 0;
+    if (!direction) return {ok:false,reason:'Moka 年份面板没有目标年份'};
+    const ordered = arrows.slice(0,2).sort((left,right) => left.getBoundingClientRect().left - right.getBoundingClientRect().left);
+    return pointFor(direction < 0 ? ordered[0] : ordered[ordered.length - 1], direction < 0 ? '上一组年份' : '下一组年份') ||
+      {ok:false,reason:'Moka 日期翻页按钮没有可点击坐标'};
   }
 
   function feishuYearTarget(index) {
@@ -2336,25 +2653,40 @@
     const match = String(value).match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
     if (!match) return {ok:false,dataGap:true,reason:'该日期控件需要完整年月日'};
     const normalized = `${match[1]}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}`;
+    const monthNames = ['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
 
     // 该 input 是 React 只读投影；点击日历日期才能更新表单状态与校验器。
     // 按年月头和周一开头的日期网格定位，避免依赖构建后会变化的 CSS 类名。
     safeScrollIntoView(el);
-    try { el.focus({preventScroll:true}); } catch (_) { el.focus?.(); }
-    const openerBox = el.getBoundingClientRect();
-    const openerOpts = {bubbles:true,cancelable:true,view:window,
-      clientX:openerBox.left + openerBox.width / 2,clientY:openerBox.top + openerBox.height / 2};
-    try {
-      el.dispatchEvent(new PointerEvent('pointerdown',openerOpts));
-      el.dispatchEvent(new MouseEvent('mousedown',openerOpts));
-      el.dispatchEvent(new PointerEvent('pointerup',openerOpts));
-      el.dispatchEvent(new MouseEvent('mouseup',openerOpts));
-    } catch (_) {
-      el.dispatchEvent(new MouseEvent('mousedown',openerOpts));
-      el.dispatchEvent(new MouseEvent('mouseup',openerOpts));
+    const calendarAlreadyOpen = () => {
+      const dayGrid = Array.from(document.querySelectorAll('table')).filter(isVisible)
+        .some(candidate => Array.from(candidate.querySelectorAll('th')).map(node => tidyLabel(node.textContent || ''))
+          .slice(0, 7).join('') === '一二三四五六日');
+      if (dayGrid) return true;
+      const labels = Array.from(document.querySelectorAll('body *')).filter(node =>
+        isVisible(node) && node.children.length === 0).map(node => tidyLabel(node.textContent || ''));
+      return labels.some(label => /^\d{4}(?:年)?$/.test(label) || /^\d{4}\s*-\s*\d{4}$/.test(label)) &&
+        labels.filter(label => monthNames.includes(label)).length >= 3;
+    };
+    // 后台真实指针事务已经展开日历时，直接沿用当前面板。这样日期事务始终只
+    // 打开一次，避免第二个 click 把 Moka 的开关式日历收起。
+    if (!calendarAlreadyOpen()) {
+      try { el.focus({preventScroll:true}); } catch (_) { el.focus?.(); }
+      const openerBox = el.getBoundingClientRect();
+      const openerOpts = {bubbles:true,cancelable:true,view:window,
+        clientX:openerBox.left + openerBox.width / 2,clientY:openerBox.top + openerBox.height / 2};
+      try {
+        el.dispatchEvent(new PointerEvent('pointerdown',openerOpts));
+        el.dispatchEvent(new MouseEvent('mousedown',openerOpts));
+        el.dispatchEvent(new PointerEvent('pointerup',openerOpts));
+        el.dispatchEvent(new MouseEvent('mouseup',openerOpts));
+      } catch (_) {
+        el.dispatchEvent(new MouseEvent('mousedown',openerOpts));
+        el.dispatchEvent(new MouseEvent('mouseup',openerOpts));
+      }
+      el.click();
+      await sleep(100);
     }
-    el.click();
-    await sleep(100);
     // Moka 每次切换月份都会重建日历 DOM。所有读取都从当前可见面板重新定位，
     // 避免继续操作已经脱离 document 的旧节点。
     const currentCalendar = () => {
@@ -2370,9 +2702,107 @@
       }
       return calendar ? {table, calendar} : null;
     };
-    if (!currentCalendar()) return {ok:false,reason:'Moka 日期面板未打开'};
+    const targetYear = Number(match[1]);
+    const targetMonth = Number(match[2]);
+    const expectedMonth = `${match[1]}-${match[2].padStart(2,'0')}`;
 
-    const monthNames = ['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+    // Moka 日期器先展示月份，再经年份标题进入十年页。它没有日期 table 时，
+    // 通用浮层扫描会把“1990 年”误当成最终日期选项。这里先完成年份和月份选择，
+    // 随后复用下方日期网格的验证逻辑。
+    const visibleLeaves = () => Array.from(document.querySelectorAll('body *')).filter(node => {
+      // Moka 近期的日期控件将图标包进了额外 span；文字或图标节点本身不再
+      // 一定是 DOM 叶子。只采用自身聚合文本很短的可见节点，同时用精确匹配
+      // 约束后续选择，既能找到翻页图标，也不会把整个日期面板当作候选。
+      if (!isVisible(node)) return false;
+      const text = tidyLabel(node.innerText || node.textContent || '');
+      return !!text && text.length <= 24;
+    });
+    const clickLabel = async label => {
+      const node = visibleLeaves().filter(candidate =>
+        tidyLabel(candidate.innerText || candidate.textContent || '') === label)
+        .sort((a,b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top ||
+          a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0];
+      if (!node) return false;
+      node.click();
+      await sleep(55);
+      return true;
+    };
+    const pickerLabels = () => visibleLeaves().map(node => tidyLabel(node.innerText || node.textContent || ''));
+    const pickerYearHeader = () => pickerLabels().find(label => /^\d{4}(?:年)?$/.test(label) || /^\d{4}\s*-\s*\d{4}$/.test(label));
+    const navigateYearGrid = async direction => {
+      // Moka 的年份翻页图标会随构建版本改变字体 glyph，不能把具体字符当作
+      // 协议。年份格本身是稳定证据：在年份格上方、左右两端的两个小控件就是
+      // 前后翻页。由几何关系找到它们，可覆盖图标字体和无障碍文本的差异。
+      const glyphArrows = visibleLeaves().filter(node => /^(?:|||)$/.test(tidyLabel(node.textContent || '')))
+        .sort((a,b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+      if (glyphArrows.length >= 2) {
+        (direction < 0 ? glyphArrows[0] : glyphArrows[glyphArrows.length - 1]).click();
+        await sleep(55);
+        return true;
+      }
+
+      const years = visibleLeaves().filter(node => /^\d{4}$/.test(tidyLabel(node.textContent || '')));
+      if (years.length < 4) return false;
+      const boxes = years.map(node => node.getBoundingClientRect()).filter(box => box.width && box.height);
+      const minX = Math.min(...boxes.map(box => box.left));
+      const maxX = Math.max(...boxes.map(box => box.right));
+      const minY = Math.min(...boxes.map(box => box.top));
+      const firstYear = years[0];
+      let root = firstYear.parentElement;
+      while (root && root !== document.body) {
+        const ownYears = Array.from(root.querySelectorAll('*')).filter(node =>
+          isVisible(node) && node.children.length === 0 && /^\d{4}$/.test(tidyLabel(node.textContent || '')));
+        if (ownYears.length >= 4) break;
+        root = root.parentElement;
+      }
+      if (!root) return false;
+      const candidates = Array.from(root.querySelectorAll('*')).filter(node => {
+        if (!isVisible(node)) return false;
+        const box = node.getBoundingClientRect();
+        if (!box.width || !box.height || box.width > 100 || box.height > 80) return false;
+        // 年份网格第一行上方、靠近网格左右边界的按钮。
+        return box.bottom <= minY + 12 && box.bottom >= minY - 90 &&
+          (box.right <= minX + 48 || box.left >= maxX - 48);
+      }).map(node => {
+        const clickable = node.closest('button,[role="button"],a,[tabindex]') || node;
+        return clickable;
+      }).filter((node, pos, all) => all.indexOf(node) === pos)
+        .sort((a,b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+      if (candidates.length < 2) return false;
+      (direction < 0 ? candidates[0] : candidates[candidates.length - 1]).click();
+      await sleep(55);
+      return true;
+    };
+    if (!currentCalendar()) {
+      let header = pickerYearHeader();
+      if (header && !/^\d{4}\s*-\s*\d{4}$/.test(header)) {
+        if (!await clickLabel(header)) return {ok:false,reason:'Moka 日期年份标题不可点击'};
+      }
+      for (let tries = 0; tries < 30 && !currentCalendar(); tries += 1) {
+        const years = pickerLabels().filter(label => /^\d{4}$/.test(label)).map(Number);
+        if (years.includes(targetYear)) {
+          if (!await clickLabel(String(targetYear))) return {ok:false,reason:'Moka 日期年份项不可点击'};
+          break;
+        }
+        if (!years.length) return {ok:false,reason:'Moka 日期年份层未显示可选年份'};
+        if (!await navigateYearGrid(targetYear < Math.min(...years) ? -1 : 1)) {
+          return {ok:false,reason:'Moka 日期年份层缺少翻页按钮'};
+        }
+      }
+      if (!currentCalendar()) {
+        const monthLabel = monthNames[targetMonth - 1];
+        if (!await clickLabel(monthLabel)) return {ok:false,reason:`Moka 日期月份项不可点击：${monthLabel}`};
+        await sleep(55);
+      }
+    }
+    // Moka 的“出生日期（年龄）”控件精度仅到月份。选择月份后面板会直接关闭，
+    // 输入框投影为 YYYY-MM（并附带年龄），此时页面已经接受了该字段。
+    if (!currentCalendar()) {
+      const actual = String(el.value || '').trim();
+      return actual.startsWith(expectedMonth)
+        ? {ok:true,action:'pick_date',index,value:actual,verified:true}
+        : {ok:false,reason:`Moka 日期月份未被表单接受：${actual || '空白'}`,expected:expectedMonth};
+    }
     const readMonth = () => {
       const state = currentCalendar();
       if (!state) return {year:0,month:0};
@@ -2407,8 +2837,6 @@
       );
     };
 
-    const targetYear = Number(match[1]);
-    const targetMonth = Number(match[2]);
     for (let tries = 0; tries < 36; tries += 1) {
       const current = readMonth();
       if (current.year === targetYear && current.month === targetMonth) break;
@@ -2583,8 +3011,7 @@
       return executeBeisenDate(el,index,value);
     }
     if (!el.matches('input[readonly]')) return {ok:false,reason:'日期控件已变化'};
-    if (isMokaFormPage() &&
-        /日期（年月日）|日期\(年月日\)/.test(String(el.getAttribute('placeholder') || ''))) {
+    if (isMokaFormPage() && deriveKind(el, deriveRole(el)) === 'moka-date') {
       return executeMokaDate(el,index,value);
     }
     const match = String(value).match(/^(\d{4})-(\d{1,2})(?:-(\d{1,2}))?$/);
@@ -3287,6 +3714,11 @@
 
         case "TRUSTED_CLICK_POINT": {
           sendResponse(trustedClickPoint(msg.index));
+          return true;
+        }
+
+        case "MOKA_DATE_NEXT_POINT": {
+          sendResponse(mokaDateNextPoint(msg.index, msg.value));
           return true;
         }
 

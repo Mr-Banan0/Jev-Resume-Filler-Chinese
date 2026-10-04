@@ -30,3 +30,16 @@ assert.equal(customSkill.actions[0].intent,'OPEN');
 const sourcePlan=planObservedPopup({elements:[option('official','龙湖官网/官微'),option('duplicate','龙湖官网/官微'),option('school','学校就业网'),option('other','其他')],
  field:{formRule:'recruitment-source',value:'校园招聘官网'},history:[],matchesValue:(el,value)=>el.label===value});
 assert.deepEqual(sourcePlan.actions.filter(a=>a.intent==='CHOOSE').map(a=>a.target),['official']);
+const mokaRelativePlan=planObservedPopup({
+  elements:[
+    {...option('card-yes','是'),kind:'card'},
+    {...option('card-no','否'),kind:'card'},
+    option('option-yes','是'),
+    option('option-no','否')
+  ],
+  field:{formRule:'relative-employment-no',value:'否',label:'亲属在本公司工作'},
+  history:[{kind:'click',formRule:'relative-employment-no'}],
+  matchesValue:(el,value)=>el.label===value
+});
+assert.deepEqual(mokaRelativePlan.actions.filter(a=>a.intent==='CHOOSE').map(a=>a.target),['option-no'],
+  '同文案视觉卡片与弹层选项并存时选择准确的弹层条目');

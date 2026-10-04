@@ -1,5 +1,5 @@
 // 验证“完整动作候选”构造：代码负责字段绑定和安全边界，Jev 只在候选间排序。
-const { buildActionPlan, buildQuestions, prepareResume } = await import(
+const { buildActionPlan, buildSectionPlan, buildQuestions, prepareResume } = await import(
   new URL('../lib/jev-client.js', import.meta.url)
 );
 
@@ -145,10 +145,28 @@ const countryCodePlan = buildActionPlan([
   {index:'f0_31',role:'textbox',kind:'combobox',section:'个人信息',label:'手机号码',value:'+86',operations:['TYPE_TEXT','CLICK']},
   {index:'f0_32',role:'textbox',kind:'input',section:'个人信息',label:'手机号码',value:'',operations:['TYPE_TEXT']}
 ], resume, [], {title:'微众银行 - 校园招聘'});
-const mokaAddPlan = buildActionPlan([
+const mokaAddPlan = buildSectionPlan([
   {index:'add-edu',role:'button',kind:'action',section:'教育背景',label:'添加',value:'',operations:['CLICK']},
-  {index:'school-1',role:'textbox',kind:'input',section:'教育背景',label:'学校名称',value:'第一学校',operations:['TYPE_TEXT']}
-], resume, [], {title:'微众银行 - 校园招聘',url:'https://app-tc.mokahr.com/apply'});
+  {index:'school-1',role:'textbox',kind:'input',section:'教育背景',label:'学校名称',value:'示例大学 A',operations:['TYPE_TEXT']}
+], {education:[{institution:'示例大学 A'},{institution:'示例大学 B'}]}, {},
+  {title:'微众银行 - 校园招聘',url:'https://app-tc.mokahr.com/apply'});
+const mokaLocationAdjustment = buildActionPlan([
+  {index:'moka-adjust',role:'textbox',kind:'custom-select',section:'个人信息',
+    label:'顾问岗需要接受工作地点调配（北上广深），请问是否可以接受？',value:'',operations:['CLICK']}
+], resume, [], {title:'明源云集团 - 校园招聘',url:'https://app.mokahr.com/apply'});
+const mokaCityPreference = buildActionPlan([
+  {index:'moka-city',role:'textbox',kind:'custom-select',section:'个人信息',
+    label:'第一意向工作地点（请勿重复选择，若三个地点重复视为不接受调配）',value:'',operations:['CLICK']}
+], resume, [], {title:'明源云集团 - 校园招聘',url:'https://app.mokahr.com/apply'});
+const mokaRecruitmentSource = buildActionPlan([
+  {index:'moka-source',role:'textbox',kind:'custom-select',section:'个人信息',
+    label:'了解到明源云校招的途径 ？',value:'',operations:['CLICK']}
+], resume, [], {title:'明源云集团 - 校园招聘',url:'https://app.mokahr.com/apply'});
+const mokaEducationRegion = buildActionPlan([
+  {index:'moka-region',role:'textbox',kind:'custom-select',section:'个人信息',
+    label:'最高学历所在地',value:'',operations:['CLICK']}
+], {basics:{highestDegree:'硕士'},education:[{degree:'硕士',institution:'香港示例大学'}]}, [],
+  {title:'明源云集团 - 校园招聘',url:'https://app.mokahr.com/apply'});
 
 const criteria = honorQuestions.action?.criteria || {};
 const checks = [
@@ -172,8 +190,16 @@ const checks = [
   ['虎牙最终投递控件未进入候选', !huyaPlan.actions.some((a) => a.target === 'f0_6')],
   ['国家区号不会被本地手机号覆盖',
     !countryCodePlan.actions.some((a) => a.target === 'f0_31') && actionFor(countryCodePlan, 'f0_32', 'basics.phone')?.operation === 'TYPE_TEXT'],
-  ['Moka 按本地条数自动新增后续教育记录',
-    mokaAddPlan.actions.some((a) => a.target === 'add-edu' && a.formRule === 'moka-add-record')],
+  ['Moka 按本地条数由分区计划器新增后续教育记录',
+    mokaAddPlan.actions.some((a) => a.target === 'add-edu' && a.operation === 'ADD_RECORD')],
+  ['工作地点调配按用户设定选择是',
+    mokaLocationAdjustment.actions.some((a) => a.target === 'moka-adjust' && a.formRule === 'job-adjustment-yes')],
+  ['意向工作地点不复用岗位调配的“是”',
+    !mokaCityPreference.actions.some((a) => a.target === 'moka-city' && a.formRule === 'job-adjustment-yes')],
+  ['校招途径绑定招聘信息来源',
+    mokaRecruitmentSource.actions.some((a) => a.target === 'moka-source' && a.formRule === 'recruitment-source')],
+  ['有香港高校证据时最高学历所在地选海外',
+    mokaEducationRegion.actions.some((a) => a.target === 'moka-region' && a.formRule === 'highest-education-region' && a.value === '海外')],
   ['视口外字段仍保留填写候选', actionFor(offscreenPlan, 'f0_1', 'basics.email')?.operation === 'TYPE_TEXT'],
   ['视口外字段保持填写动作，执行层负责定位目标', !offscreenPlan.actions.some((a) => a.operation === 'SCROLL_DOWN')],
   ['当前分区满足后只生成向前的下一步动作',

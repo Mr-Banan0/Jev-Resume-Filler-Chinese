@@ -9,11 +9,12 @@
 <body>
   <header class="header">
     <h1 class="title">Jev Resume Filler</h1>
-        <span class="version">v0.5.0</span>
+    <span class="version">v0.5.3</span>
   </header>
 
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="basic" role="tab">基本</button>
+    <button class="tab" data-tab="todo" role="tab">清单</button>
     <button class="tab" data-tab="edu" role="tab">教育</button>
     <button class="tab" data-tab="work" role="tab">工作</button>
     <button class="tab" data-tab="skills" role="tab">技能</button>
@@ -211,6 +212,20 @@
           </select>
         </label>
       </div>
+    </section>
+
+    <section class="pane" data-pane="todo">
+      <div class="todo-header">
+        <div>
+          <h2 class="todo-title">当前网页填写清单</h2>
+          <p class="todo-description">先读取页面，再按分区查看本地资料、网页记录和下一项操作。</p>
+        </div>
+        <button class="btn ghost small" id="btn-refresh-todo">读取页面</button>
+      </div>
+      <p class="todo-summary" id="todo-summary" aria-live="polite">尚未读取当前网页。</p>
+      <ol class="todo-list" id="todo-list" aria-live="polite">
+        <li class="todo-empty">点击“读取页面”生成填写清单。</li>
+      </ol>
     </section>
 
     <!-- 教育 pane -->

@@ -22,8 +22,11 @@ window.eval(readFileSync(new URL('../content/platform-drivers.js',import.meta.ur
 window.eval(readFileSync(new URL('../content/content.js',import.meta.url),'utf8'));
 const result=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
 const fields=result.elements.filter(el=>el.kind==='input');
-assert.deepEqual(Array.from(fields,el=>el.label),['姓名','邮箱','学校名称','家属姓名']);
-assert.deepEqual(Array.from(fields,el=>el.section),['个人信息','个人信息','教育经历','家庭情况']);
+assert.deepEqual(Array.from(fields,el=>el.label),['姓名','邮箱','家属姓名']);
+assert.deepEqual(Array.from(fields,el=>el.section),['个人信息','个人信息','家庭情况']);
+const schoolLookup=result.elements.find(el=>el.label==='学校名称');
+assert.equal(schoolLookup?.kind,'combobox','学校名称应进入联想选择事务');
+assert.equal(schoolLookup?.section,'教育经历');
 const leadingRequired=window.document.createElement('div');
 leadingRequired.className='form-row';
 leadingRequired.innerHTML='<div class="field-title">* 证件号码</div><div><input placeholder="请输入"></div>';

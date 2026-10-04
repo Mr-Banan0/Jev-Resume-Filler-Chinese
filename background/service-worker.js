@@ -1,7 +1,7 @@
 // background/service-worker.js — 阶段3：Agent 主循环
 // 接收 Popup 的 START_FILL，跑完整 Agent 循环，通过 FILL_PROGRESS/FILL_DONE 推送进度
 
-import { buildActionPlan, buildSectionPlan, choose, classifyRecordAddition, countRenderedRecords, getResumeValue, prepareResume, sectionCollection } from "../lib/jev-client.js";
+import { buildActionPlan, buildDataBlockPlan, buildSectionPlan, buildTodoList, choose, classifyRecordAddition, countRenderedRecords, getResumeValue, isRecordSaveControl, prepareResume, sectionCollection } from "../lib/jev-client.js";
 import { CONTENT_SCRIPT_VERSION } from "../lib/content-version.js";
 import { classifyPageState } from "../lib/page-state.js";
 import { honorSections, recordIdentity, savedAt, HONOR_OVERVIEW_PATH } from "../lib/honor-flow.js";
@@ -81,44 +81,46 @@ function sendToFrame(tabId, frameId, message) {
   });
 }
 
-// 飞书招聘的部分卡片仅响应浏览器派发的真实用户输入。内容脚本负责把已扫描的
-// 卡片转换成当前视口坐标，后台在当前标签页短暂附加 Chrome 调试通道发送一次
-// 鼠标事务，并在事务结束后立即分离。该路径仅由快照中的 trusted-pointer 标记
-// 启用，普通网页继续使用原有的 DOM 执行器。
-async function clickWithTrustedPointer(tabId, frameId, index) {
-  if (frameId !== 0) {
-    return {ok:false,reason:'真实指针点击目前仅支持顶层飞书表单'};
+// 部分招聘控件只响应浏览器派发的真实用户输入。内容脚本负责把已扫描的控件
+// 转换成当前视口坐标，后台在当前标签页短暂附加 Chrome 调试通道发送一次
+// 鼠标事务，并在事务结束后立即分离。该路径由快照中的 trusted-pointer 标记启用。
+async function dispatchTrustedPointer(debuggee, point) {
+  const x = Number(point?.x);
+  const y = Number(point?.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return {ok:false,reason:'控件未返回有效点击坐标'};
   }
+  await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+    type:'mouseMoved',x,y,pointerType:'mouse'
+  });
+  await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+    type:'mousePressed',x,y,button:'left',buttons:1,clickCount:1,pointerType:'mouse'
+  });
+  await sleep(35);
+  await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
+    type:'mouseReleased',x,y,button:'left',buttons:0,clickCount:1,pointerType:'mouse'
+  });
+  return {ok:true};
+}
+
+async function clickWithTrustedPointer(tabId, frameId, index) {
+  if (frameId !== 0) return {ok:false,reason:'真实指针点击目前仅支持顶层表单'};
   const target = await sendToFrame(tabId, frameId, {type:'TRUSTED_CLICK_POINT',index});
   if (!target?.ok || target.clickMode !== 'trusted-pointer') {
     return target?.ok ? {ok:false,reason:'目标未声明真实指针点击策略'} : target;
   }
   if (!chrome.debugger?.attach || !chrome.debugger?.sendCommand || !chrome.debugger?.detach) {
-    return {ok:false,reason:'扩展尚未启用 Chrome debugger 权限，无法执行飞书真实点击'};
+    return {ok:false,reason:'扩展尚未启用 Chrome debugger 权限，无法执行真实点击'};
   }
   const debuggee = {tabId};
   let attached = false;
   try {
     await chrome.debugger.attach(debuggee, '1.3');
     attached = true;
-    const x = Number(target.point?.x);
-    const y = Number(target.point?.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      return {ok:false,reason:'飞书卡片未返回有效点击坐标'};
-    }
-    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
-      type:'mouseMoved',x,y,pointerType:'mouse'
-    });
-    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
-      type:'mousePressed',x,y,button:'left',buttons:1,clickCount:1,pointerType:'mouse'
-    });
-    await sleep(35);
-    await chrome.debugger.sendCommand(debuggee, 'Input.dispatchMouseEvent', {
-      type:'mouseReleased',x,y,button:'left',buttons:0,clickCount:1,pointerType:'mouse'
-    });
-    return {ok:true,action:'click',bridge:'trusted-pointer',label:target.label};
+    const clicked = await dispatchTrustedPointer(debuggee, target.point);
+    return clicked.ok ? {ok:true,action:'click',bridge:'trusted-pointer',label:target.label} : clicked;
   } catch (err) {
-    return {ok:false,reason:`飞书真实点击未执行：${err.message}`};
+    return {ok:false,reason:`真实点击未执行：${err.message}`};
   } finally {
     if (attached) await chrome.debugger.detach(debuggee).catch(() => {});
   }
@@ -127,6 +129,38 @@ async function clickWithTrustedPointer(tabId, frameId, index) {
 async function executePageClick(tabId, frameId, index, trustedPointer = false) {
   if (trustedPointer) return clickWithTrustedPointer(tabId, frameId, index);
   return sendToFrame(tabId, frameId, {type:'EXECUTE',action:'click',index});
+}
+
+async function pickDateWithTrustedPointer(tabId, frameId, index, value) {
+  if (frameId !== 0) return {ok:false,reason:'Moka 日期选择器目前仅支持顶层表单'};
+  const opener = await sendToFrame(tabId, frameId, {type:'TRUSTED_CLICK_POINT',index});
+  if (!opener?.ok || opener.clickMode !== 'trusted-pointer') {
+    return opener?.ok ? {ok:false,reason:'目标未声明 Moka 真实日期选择策略'} : opener;
+  }
+  if (!chrome.debugger?.attach || !chrome.debugger?.sendCommand || !chrome.debugger?.detach) {
+    return {ok:false,reason:'扩展尚未启用 Chrome debugger 权限，无法执行真实日期点击'};
+  }
+  const debuggee = {tabId};
+  let attached = false;
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    const opened = await dispatchTrustedPointer(debuggee, opener.point);
+    if (!opened.ok) return opened;
+    for (let step = 0; step < 18; step += 1) {
+      await sleep(WAIT_MS_OVERLAY);
+      const next = await sendToFrame(tabId, frameId, {type:'MOKA_DATE_NEXT_POINT',index,value});
+      if (!next?.ok) return next || {ok:false,reason:'Moka 日期面板未返回下一步'};
+      if (next.done) return {ok:true,action:'pick_date',value:next.value,verified:true,bridge:'trusted-pointer'};
+      const clicked = await dispatchTrustedPointer(debuggee, next.point);
+      if (!clicked.ok) return clicked;
+    }
+    return {ok:false,reason:'Moka 日期选择超过最大步骤'};
+  } catch (err) {
+    return {ok:false,reason:`Moka 日期真实点击未执行：${err.message}`};
+  } finally {
+    if (attached) await chrome.debugger.detach(debuggee).catch(() => {});
+  }
 }
 
 // 飞书的单年份框通过展开年份网格提交值。内容脚本将输入框和已展开网格中的
@@ -637,8 +671,8 @@ function describeEmpty(snap) {
 }
 
 async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun = () => true,
-  initialRecordIndex, batchRecords = true, targetFrameId = null, sectionTitle = '', scopeSection = '' }) {
-  const history = [];
+  initialRecordIndex, batchRecords = true, targetFrameId = null, sectionTitle = '', scopeSection = '', dataBlock = '', fieldBindings = [], recordEditor = false }) {
+  const history = fieldBindings.map(binding=>({...binding,kind:'bind'}));
   let step = 0;
   let consecutiveSkips = 0;
   let consecutiveStale = 0;
@@ -648,10 +682,11 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
   const pendingSearchReads = new Map();
   const pendingIssues = [];
   const deferField = async (decision, reason) => {
-    if (!decision.resumeField) return false;
+    const deferredKey = decision.resumeField || (decision.formRule && `rule:${decision.formRule}`);
+    if (!deferredKey) return false;
     const {frameId} = parseFrameTarget(decision.sourceTarget || decision.target);
     await sendToFrame(tabId,frameId,{type:'CLOSE_TRANSACTIONS'});
-    history.push({kind:'cancel',cancelField:decision.resumeField,action:'DEFER_FIELD',page_changed:true});
+    history.push({kind:'cancel',cancelField:deferredKey,action:'DEFER_FIELD',page_changed:true});
     pendingIssues.push({field:decision.fieldLabel || decision.label || decision.resumeField,reason});
     onProgress({step,phase:'blocked',action:`${decision.fieldLabel || decision.label} 暂列待补，继续当前记录的其他字段：${reason}`});
     consecutiveSkips = 0;
@@ -687,7 +722,8 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
     if (scopeSection) {
       snap.elements = snap.elements.filter(el => el.context === 'popup' || el.section === scopeSection);
       snap.count = snap.elements.length;
-      snap.page = {...snap.page, title:scopeSection, scopedSection:true, ignoreUnmapped:true};
+      snap.page = {...snap.page, title:scopeSection, sectionScope:true, dataBlock,
+        recordIndex,recordScope:true,recordEditor,scopedSection:true, ignoreUnmapped:true};
     }
     if (step === 1) {
       recordSection = snap.page?.title || '';
@@ -783,8 +819,7 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
       framesWithElements: snap.framesWithElements
     });
 
-    // 2. 代码把控件、字段和值绑定为完整动作，再让 Jev 只负责排序。
-    //    这一步同时排除最终投递，并让“没有可做动作”的结论由确定性规则给出。
+    // 2. 在选定资料块内生成字段绑定与执行候选，逐次回读当前记录。
     const actionPlan = buildActionPlan(snap.elements, resume, history, {...snap.page,recordIndex,allowAddRecords:!scopeSection});
     if (actionPlan.actions.length && actionPlan.pickerField) pendingSearchReads.delete(actionPlan.pickerField);
     if (actionPlan.actions.length === 0) {
@@ -826,7 +861,7 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
           action: `当前分区已满足 ${satisfiedControls} 个已映射字段；没有可继续的分区动作`
         });
         history.push({ action: "DONE", kind: "done", text: "mapped fields satisfied", page_changed: false });
-        return { ok: pendingIssues.length === 0, done: true, pendingIssues, step, history };
+        return { ok: pendingIssues.length === 0, done: true, mappedControls, pendingIssues, step, history };
       }
       onProgress({
         step,
@@ -868,6 +903,23 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
     });
 
     const { operation, target, resumeField } = decision;
+    if (operation === 'BIND_FIELD' || operation === 'SKIP_FIELD') {
+      if (operation === 'BIND_FIELD' && decision.confidence >= 0.75) {
+        history.push({kind:'bind',resumeField,controlStableKey:decision.controlStableKey,
+          label:decision.label,fieldLabel:decision.fieldLabel,recordIndex:decision.recordIndex,
+          page_changed:false});
+        onProgress({step,phase:'bound',action:`${decision.label} 已绑定 ${resumeField}，重新观察后执行`});
+      } else {
+        history.push({kind:'skip',skipControlKey:decision.controlStableKey || target,label:decision.label,
+          reason:operation==='BIND_FIELD' ? '字段绑定置信不足，保留待核对' : '当前资料块无对应字段，保留待核对',page_changed:false});
+        onProgress({step,phase:'skip',action:`${decision.label} 在当前资料块中暂未匹配，继续检查其余字段`});
+      }
+      continue;
+    }
+    if (operation === 'RETURN_SECTION') {
+      await sendToFrame(tabId,0,{type:'CLOSE_TRANSACTIONS'});
+      return {ok:false,returned:true,reason:'Jev 返回当前 section 的资料块清单',step,history,pendingIssues};
+    }
     if (decision.intent === 'RETURN' && (decision.cancelField || operation==='RETURN')) {
       const {frameId,local}=parseFrameTarget(operation==='RETURN'?'f0_0':target);
       const returned=await sendToFrame(tabId,frameId,operation==='RETURN' ? {type:'CLOSE_TRANSACTIONS'} :
@@ -878,10 +930,6 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
         await sleep(WAIT_MS_OVERLAY);
         continue;
       }
-    }
-    if (decision.semanticFallback && decision.intent !== 'OPEN' && decision.confidence < 0.75) {
-      return {ok:false,reason:`候选含义尚未确定：${decision.fieldLabel}`,step,history,
-        pendingIssues:[...pendingIssues,{field:decision.fieldLabel,reason:'语义选项匹配置信不足，保留待核对'}]};
     }
     if (decision.formRule === 'agreement' && !agreementConfirmedForRun) {
       pendingIssues.push({field:decision.label || '招聘协议',reason:'协议需在插件面板审阅后确认'});
@@ -1008,7 +1056,9 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
     const beisenPopupChoice = operation === 'CLICK' && decision.context === 'popup' &&
       (() => { try { return /(^|\.)zhiye\.com$/i.test(new URL(snap.page.url).hostname); } catch (_) { return false; } })() &&
       !/^(取消|清空已选)$/.test(decision.label || '');
-    const feishuTrustedPointer = operation === 'CLICK' && isFeishu &&
+    const mokaPopupChoice = operation === 'CLICK' && decision.context === 'popup' && isMoka;
+    const trustedPointer = operation === 'CLICK' && targetEntry?.clickMode === 'trusted-pointer';
+    const mokaTrustedDatePicker = operation === 'PICK_DATE' && isMoka &&
       targetEntry?.clickMode === 'trusted-pointer';
     const feishuYearPicker = operation === 'TYPE_TEXT' && isFeishu &&
       targetEntry?.kind === 'feishu-year';
@@ -1016,15 +1066,19 @@ async function runAgent({ goal, resume, apiKey, tabId, onProgress, isCurrentRun 
       targetEntry?.kind === 'feishu-date-range';
     let execRes = beisenPopupChoice
       ? await clickBeisenPickerInPage(tabId,frameId,local,decision.label,decision.pickerLeaf)
+      : mokaPopupChoice
+        ? await clickWithTrustedPointer(tabId, frameId, local)
       : feishuYearPicker
         ? await selectFeishuYearFromPicker(tabId, frameId, local, execMsg.value)
       : feishuRangePicker
         ? await selectFeishuRangeFromPicker(tabId, frameId, local, execMsg.value)
+      : mokaTrustedDatePicker
+        ? await pickDateWithTrustedPointer(tabId, frameId, local, execMsg.value)
       : operation === 'TYPE_TEXT' && (isMoka || keepFeishuSearchOpen)
         ? await commitControlledText(tabId, frameId, local, execMsg.value,
           (isMoka && targetEntry?.kind === 'combobox') || keepFeishuSearchOpen)
-        : operation === 'CLICK'
-          ? await executePageClick(tabId, frameId, local, feishuTrustedPointer)
+      : operation === 'CLICK'
+          ? await executePageClick(tabId, frameId, local, trustedPointer)
           : await sendToFrame(tabId, frameId, execMsg);
     if (beisenPopupChoice && !execRes?.ok && /找不到北森单选图标|目标不属于北森常量选择器/.test(execRes?.reason || '')) {
       execRes = await sendToFrame(tabId, frameId, execMsg);
@@ -1151,6 +1205,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const snap = await snapshotAllFrames(tab.id);
       const resume = msg.resume ? prepareResume(msg.resume) : null;
       const sectionPlan = resume ? buildSectionPlan(snap.elements, resume, {}, snap.page) : null;
+      const todo = resume ? buildTodoList(snap.elements, resume, {}, snap.page) : null;
       const pageState = classifyPageState(snap.page, snap.elements);
       sendResponse({
         ok: true,
@@ -1167,6 +1222,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         pageState: pageState.kind,
         pageStateReason: pageState.reason,
         sectionPlan: sectionPlan?.actions.map(action => ({section:action.section || '',operation:action.operation})),
+        todo,
         preview: snap.elements.slice(0, 120)
       });
     })();
@@ -1485,6 +1541,15 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
   const ledger = {};
   const sections = [];
   const pendingIssues = [];
+  let focusSection = '';
+  const isEmptyRequiredField = el => {
+    if (el.context === 'popup' || !el.required) return false;
+    if (['checkbox','radio','custom-checkbox'].includes(el.kind)) return el.checked !== true;
+    if (el.checked === true) return false;
+    const value = String(el.value || '').trim();
+    return el.valueCommitted === false || !value ||
+      /^(?:请选择|请填写|必填项未填写|上传|年|月)$/.test(value);
+  };
   const addPendingIssue = (field, reason) => {
     const item = {
       field:String(field || '').trim(),
@@ -1496,6 +1561,22 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
   };
   const auditRequiredFields = async () => {
     const current = await snapshotAllFrames(tabId);
+    const plansBySection = new Map();
+    const planForSection = section => {
+      const key = section || '';
+      if (!plansBySection.has(key)) {
+        const controls = current.elements.filter(item => item.context !== 'popup' && (item.section || '') === key);
+        const state=ledger[`${key}|*`] || {};
+        const blocks=buildDataBlockPlan(key,controls,resume,[],current.page).actions
+          .filter(action=>action.operation==='SELECT_DATA_BLOCK').map(action=>action.dataBlock);
+        const plans=blocks.map(dataBlock=>buildActionPlan(controls,resume,[],{
+          ...current.page,title:key,dataBlock,fieldBindings:state.bindingsByBlock?.[dataBlock] || [],
+          allowAddRecords:false,scopedSection:true,ignoreUnmapped:true
+        }));
+        plansBySection.set(key,{summary:{fieldGroups:plans.flatMap(plan=>plan.summary?.fieldGroups || [])}});
+      }
+      return plansBySection.get(key);
+    };
     for (const el of current.elements) {
       if (el.context === 'popup') continue;
       if (el.validationError) {
@@ -1503,21 +1584,60 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
           `网站校验未通过：${el.validationError}`);
         continue;
       }
-      if (!el.required) continue;
-      const value = String(el.value || '').trim();
-      const empty = !value || /^(请选择|请填写|必填项未填写|上传|年|月)$/.test(value);
-      if (!empty || el.checked === true) continue;
-      const localPlan = buildActionPlan([el], resume, [], {
-        ...current.page, title:el.section || '', allowAddRecords:false, scopedSection:true
-      });
-      if (localPlan.summary?.mappedControls > 0) {
-        addPendingIssue(`${el.section || '页面'} ${el.label || '未命名必填项'}`, '网站必填字段尚未填写');
-      }
+      const localPlan = planForSection(el.section);
+      const groups=localPlan.summary?.fieldGroups?.filter(group=>group.targets.includes(el.index)) || [];
+      const fieldGroup=groups.find(group=>['ready','pending-readback','conflict'].includes(group.status)) || groups[0];
+      const state=ledger[`${el.section}|*`] || {};
+      const skipped=Object.values(state.skipsByBlock || {}).flat().find(item=>
+        item.skipControlKey===(el.stableKey || el.index));
+      const emptySkipped=skipped && !String(el.value || '').trim() && el.checked!==true;
+      if (!isEmptyRequiredField(el) && !['ready','pending-readback','conflict'].includes(fieldGroup?.status) && !emptySkipped) continue;
+      const reason = emptySkipped ? skipped.reason : fieldGroup?.status==='conflict' ? fieldGroup.reason || '页面已有值与本地资料不同，已保留网页内容' :
+        fieldGroup?.status === 'missing-data' ? '本地资料缺少此必填项' :
+        fieldGroup && ['ready','pending-readback','conflict'].includes(fieldGroup.status) ?
+          `${el.required ? '网站必填字段' : '已映射字段'}尚未回读完成` : '本地资料尚未映射到此必填项';
+      addPendingIssue(`${el.section || '页面'} ${el.label || '未命名必填项'}`, reason);
     }
   };
   const finish = async (reason) => {
     await auditRequiredFields();
     return {ok:pendingIssues.length===0,done:true,sections,pendingIssues,reason};
+  };
+  const routeDataBlock = async (section, snap) => {
+    const sectionKey=`${section}|*`;
+    const state=ledger[sectionKey] || {};
+    if (state.activeBlock) return state.activeBlock;
+    const controls=snap.elements.filter(el => el.section === section || el.context === 'popup');
+    const blockPlan=buildDataBlockPlan(section,controls,resume,
+      [...(state.completedBlocks || []),...(state.blockedBlocks || [])],snap.page);
+    if (!blockPlan.actions.some(action=>action.operation==='SELECT_DATA_BLOCK')) {
+      ledger[sectionKey]={...state,deferred:true};
+      return null;
+    }
+    const choice=await choose({apiKey,
+      goal:`${goal}\nSelect the JSON block corresponding to this section and its visible fields. Work on one block at a time.`,
+      page:{...snap.page,title:section,sectionScope:true},elements:controls,history:[],resume,
+      actionPlan:blockPlan});
+    if (choice.operation==='NO_DATA_BLOCK') {
+      ledger[sectionKey]={...state,deferred:true};
+      if (!(state.completedBlocks || []).length && !(state.blockedBlocks || []).length &&
+          controls.some(el=>el.context!=='popup' &&
+            ['input','textarea','richtext','custom-select','combobox','date','native-select','file'].includes(el.kind) &&
+            !String(el.value || '').trim())) {
+        addPendingIssue(section,'Jev 未找到与当前空字段对应的资料块，保留待核对');
+      }
+      report({phase:'section',action:`「${section}」无匹配资料块，返回分区清单`});
+      return null;
+    }
+    if (!(choice.confidence >= 0.75)) {
+      ledger[sectionKey]={...state,deferred:true};
+      addPendingIssue(section,'资料块选择置信不足，保留待核对');
+      return null;
+    }
+    ledger[sectionKey]={...state,activeBlock:choice.dataBlock,workBlocked:false};
+    report({phase:'section',action:`「${section}」选定资料块 ${choice.dataBlock}，开始局部填写`,
+      confidence:choice.confidence});
+    return choice.dataBlock;
   };
   let menuExits = 0;
   for (let turn = 1; turn <= 160; turn += 1) {
@@ -1528,7 +1648,8 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       addPendingIssue('页面状态',currentPageState.reason);
       return {ok:false,terminal:true,reason:currentPageState.reason,sections,pendingIssues};
     }
-    const plan = buildSectionPlan(snap.elements, resume, ledger, snap.page);
+    if (focusSection && ledger[`${focusSection}|*`]?.deferred) focusSection='';
+    const plan = buildSectionPlan(snap.elements, resume, ledger, {...snap.page,focusSection});
     const activeTitle=snap.page.activeSection;
     const activeEditor=snap.elements.some(el=>el.section===activeTitle && el.context!=='popup' &&
       /^(保存|添加|取消)$/.test(String(el.label || '').replace(/\s/g,'')) && el.kind!=='card');
@@ -1547,6 +1668,14 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       await sleep(WAIT_MS_SECTION);
       continue;
     }
+    if (!meaningful.length && focusSection) {
+      const state=ledger[`${focusSection}|*`] || {};
+      if (state.activeBlock) addPendingIssue(`${focusSection} ${state.activeBlock}`,
+        '当前记录已检查；页面未提供继续填写剩余资料的新增或编辑入口');
+      ledger[`${focusSection}|*`]={...state,deferred:true};
+      focusSection='';
+      continue;
+    }
     if (!meaningful.length) return finish('已检查可识别分区');
     let decision;
     try {
@@ -1562,6 +1691,12 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       return finish('Jev 已结束本次填写');
     }
     if (decision.operation === 'EXIT_SECTION_MENU') {
+      if (focusSection) {
+        ledger[`${focusSection}|*`]={...ledger[`${focusSection}|*`],deferred:true};
+        focusSection='';
+        menuExits=0;
+        continue;
+      }
       menuExits += 1;
       if (menuExits < 2) {
         report({step:turn,phase:'section',action:'退出当前 section，重新扫描可填写清单'});
@@ -1571,11 +1706,10 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       return finish('已退出分区清单');
     }
     if (decision.operation === 'DEFER_SECTION') {
-      await auditRequiredFields();
       const {frameId,local} = parseFrameTarget(decision.target);
       const targetEntry = snap.elements.find(element => String(element.index) === String(decision.target));
       const executed = await executePageClick(tabId,frameId,local,
-        snap.page?.platform === 'feishu-jobs' && targetEntry?.clickMode === 'trusted-pointer');
+        targetEntry?.clickMode === 'trusted-pointer');
       await sleep(WAIT_MS_SECTION);
       const after = await snapshotAllFrames(tabId);
       const editorRemains = after.page.activeSection === decision.section && after.elements.some(el =>
@@ -1586,7 +1720,9 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
         return {ok:false,sections,pendingIssues,reason:'当前编辑器无法安全退出'};
       }
       if (decision.deferRecord) {
-        ledger[`${decision.section}|${decision.recordIndex}`]={...ledger[`${decision.section}|${decision.recordIndex}`],skipped:true};
+        const block=ledger[`${decision.section}|*`]?.activeBlock;
+        const key=block ? `${decision.section}|${block}|${decision.recordIndex}` : `${decision.section}|${decision.recordIndex}`;
+        ledger[key]={...ledger[key],skipped:true};
         ledger[`${decision.section}|*`] = {...ledger[`${decision.section}|*`],workBlocked:false,editorPending:false};
       } else ledger[`${decision.section}|*`] = {...ledger[`${decision.section}|*`],deferred:true,editorPending:false};
       addPendingIssue(decision.deferRecord ? `${decision.section} 第 ${decision.recordIndex+1} 条` : decision.section,
@@ -1594,24 +1730,41 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       sections.push({section:decision.section,recordIndex:decision.recordIndex,status:'deferred',
         reason:decision.deferRecord ? '继续检查本分区其余记录' : '继续其他可填写分区'});
       menuExits = 0;
+      if (!decision.deferRecord) focusSection='';
       report({step:turn,phase:'section',action:`已退出「${decision.section}」，记录待补并继续${decision.deferRecord?'检查其余记录':'其他分区'}`});
       continue;
     }
+    if (['ADD_RECORD','WORK_SECTION'].includes(decision.operation) && decision.section &&
+        !ledger[`${decision.section}|*`]?.activeBlock) {
+      focusSection=decision.section;
+      try {
+        await routeDataBlock(decision.section,snap);
+      } catch (err) {
+        addPendingIssue(decision.section,`资料块选择失败：${err.message}`);
+        return {ok:false,reason:`Jev 资料块选择失败：${err.message}`,sections,pendingIssues};
+      }
+      // 资料块已确定；重新观察页面和记录索引，再构造当前块的操作。
+      continue;
+    }
     if (decision.operation === 'FOCUS_SECTION' || decision.operation === 'ADD_RECORD') {
+      focusSection=decision.section;
+      const dataBlock=ledger[`${decision.section}|*`]?.activeBlock || '';
       const beforeControls = snap.elements.filter(el => el.section === decision.section && el.context !== 'popup');
-      const beforeRendered = countRenderedRecords(decision.section, beforeControls);
+      const beforeRendered = countRenderedRecords(decision.section, beforeControls,dataBlock);
       const {frameId,local} = parseFrameTarget(decision.target);
       const targetEntry = snap.elements.find(element => String(element.index) === String(decision.target));
       const executed = await executePageClick(tabId,frameId,local,
-        snap.page?.platform === 'feishu-jobs' && targetEntry?.clickMode === 'trusted-pointer');
+        targetEntry?.clickMode === 'trusted-pointer');
       if (!executed?.ok) {
         const current = await snapshotAllFrames(tabId);
         const currentControls = current.elements.filter(el => el.section === decision.section && el.context !== 'popup');
-        const rendered = countRenderedRecords(decision.section, currentControls);
-        const key = `${decision.section}|${rendered}`;
+        const rendered = countRenderedRecords(decision.section, currentControls,dataBlock);
+        const key = dataBlock ? `${decision.section}|${dataBlock}|${rendered}` : `${decision.section}|${rendered}`;
         ledger[key] = decision.operation === 'ADD_RECORD' ?
           {addBlocked:true,status:'新增入口执行失败'} : {focusBlocked:true,status:'入口执行失败'};
         addPendingIssue(decision.section || decision.label, executed?.reason || '无法执行分区入口');
+        ledger[`${decision.section}|*`]={...ledger[`${decision.section}|*`],
+          ...(decision.operation==='ADD_RECORD' ? {addBlocked:true} : {focusBlocked:true})};
       } else {
         if (decision.operation === 'FOCUS_SECTION' && Number.isInteger(decision.recordIndex)) {
           const sectionKey=`${decision.section}|*`;
@@ -1622,15 +1775,15 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
         const current = await snapshotAllFrames(tabId);
         if (decision.operation === 'FOCUS_SECTION' &&
             current.page?.activeSection !== decision.section && current.fingerprint === snap.fingerprint) {
-          ledger[`${decision.section}|*`] = {focusBlocked:true,status:'进入分区后页面未变化'};
+          ledger[`${decision.section}|*`] = {...ledger[`${decision.section}|*`],focusBlocked:true,status:'进入分区后页面未变化'};
           addPendingIssue(decision.section, '点击分区入口后页面未变化');
         }
         if (decision.operation === 'ADD_RECORD') {
-          const addition = classifyRecordAddition({section:decision.section,before:snap,after:current});
+          const addition = classifyRecordAddition({section:decision.section,dataBlock,before:snap,after:current});
           if (!addition.verified) {
-            const key = `${decision.section}|${beforeRendered}`;
+            const key = `${decision.section}|${dataBlock}|${beforeRendered}`;
             ledger[key] = {addBlocked:true,status:addition.reason};
-            ledger[`${decision.section}|*`] = {addBlocked:true,status:addition.reason};
+            ledger[`${decision.section}|*`] = {...ledger[`${decision.section}|*`],addBlocked:true,status:addition.reason};
             addPendingIssue(decision.section, addition.reason);
             report({step:turn,phase:'section',action:`「${decision.section}」新增未获页面确认，已停止重复点击`});
           } else if (addition.mode === 'editor' || addition.mode === 'route') {
@@ -1650,13 +1803,25 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
     if (decision.operation !== 'WORK_SECTION' || !decision.section) continue;
     const before = await snapshotAllFrames(tabId);
     const scopedControls = before.elements.filter(el => el.context === 'popup' || el.section === decision.section);
-    const planBefore = buildActionPlan(scopedControls,resume,[],{...before.page,title:decision.section,allowAddRecords:false});
-    const anchorCount = countRenderedRecords(decision.section, scopedControls);
+    const activeBlock=ledger[`${decision.section}|*`]?.activeBlock;
+    focusSection=decision.section;
+    const fieldBindings=ledger[`${decision.section}|*`]?.bindingsByBlock?.[activeBlock] || [];
+    const recordEditor=ledger[`${decision.section}|*`]?.editorPending || !!before.page.editorSurface;
+    const planBefore = buildActionPlan(scopedControls,resume,[],{
+      ...before.page,title:decision.section,dataBlock:activeBlock,allowAddRecords:false,
+      scopedSection:true,ignoreUnmapped:true,recordScope:true,recordEditor,recordIndex:decision.recordIndex || 0,fieldBindings
+    });
+    const anchorCount = countRenderedRecords(decision.section, scopedControls,activeBlock);
     const key = decision.ledgerKey || `${decision.section}|${decision.recordIndex ?? anchorCount}`;
     report({step:turn,phase:'section',action:`专注填写「${decision.section}」；已隔离 ${scopedControls.length} 个控件`});
     const result = await runAgent({goal,resume,apiKey,tabId,onProgress:report,isCurrentRun,scopeSection:decision.section,
-      initialRecordIndex:decision.recordIndex ?? 0,batchRecords:false});
+      dataBlock:activeBlock,fieldBindings,recordEditor,initialRecordIndex:decision.recordIndex ?? 0,batchRecords:false});
     if (result.cancelled) return {ok:false,cancelled:true,reason:'已停止填写',sections,pendingIssues};
+    const sectionKey=`${decision.section}|*`;
+    const sectionState=ledger[sectionKey] || {};
+    ledger[sectionKey]={...sectionState,bindingsByBlock:{...sectionState.bindingsByBlock,
+      [activeBlock]:(result.history || []).filter(item=>item.kind==='bind')},
+      skipsByBlock:{...sectionState.skipsByBlock,[activeBlock]:(result.history || []).filter(item=>item.skipControlKey)}};
     // 局部事务结束后关闭选择器，下一分区只看到自己的控件和浮层。
     if (!result.ok) {
       await sendToFrame(tabId,0,{type:'CLOSE_TRANSACTIONS'});
@@ -1664,37 +1829,43 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
     }
     const afterWork = await snapshotAllFrames(tabId);
     const savedRecord = result.sectionSaved && (() => {
-      const collection = sectionCollection(decision.section);
-      const records = decision.section === '实习/工作经历' ?
-        [...(resume.internship || []), ...(resume.work || [])] : resume[collection] || [];
+      const records = resume[activeBlock] || [];
       const record = records[decision.recordIndex || 0];
       const identity = record?.institution || record?.company || record?.title || record?.name || record?.position || record?.language;
       return !!identity && String(afterWork.page.text || '').includes(identity);
     })();
     const inlineComplete = result.ok && result.done && !scopedControls.some(el =>
-      /^(保存|添加)$/.test(String(el.label || '').replace(/\s/g,'')) && el.kind !== 'card' &&
-      el.operations?.includes('CLICK'));
+      isRecordSaveControl(el, scopedControls));
     if (savedRecord || inlineComplete) {
       const sectionKey = `${decision.section}|*`;
       ledger[sectionKey] = {...ledger[sectionKey],editorPending:false,savedCount:Math.max(ledger[sectionKey]?.savedCount || 0,
         (decision.recordIndex || 0) + 1)};
     }
-    const savedSingleton = result.sectionSaved &&
-      !Array.isArray(resume[sectionCollection(decision.section)]);
+    const savedSingleton = result.sectionSaved && !Array.isArray(resume[activeBlock]);
     const previousAttempts = ledger[key]?.workAttempts || 0;
     const noProgress = !result.ok && afterWork.fingerprint === before.fingerprint;
     const noAvailableAction = !result.ok &&
       /^当前页面没有可执行的已映射动作/.test(result.reason || '');
-    const noLocalMapping = noAvailableAction && planBefore.summary?.mappedControls === 0 &&
-      !(planBefore.summary?.unresolvedMapped || []).length;
-    const status = noLocalMapping ? 'no-data' :
-      result.ok && (inlineComplete || savedRecord || savedSingleton) ? 'verified' : 'blocked';
+    const noLocalMapping = result.mappedControls === 0 || (noAvailableAction && planBefore.summary?.mappedControls === 0 &&
+      !(planBefore.summary?.unresolvedMapped || []).length);
+    const afterControls=afterWork.elements.filter(el => el.context === 'popup' || el.section === decision.section);
+    const afterPlan=buildActionPlan(afterControls,resume,result.history || [],{
+      ...afterWork.page,title:decision.section,dataBlock:activeBlock,recordIndex:decision.recordIndex || 0,
+      scopedSection:true,ignoreUnmapped:true,recordScope:true,recordEditor:!!afterWork.page.editorSurface,allowAddRecords:false
+    });
+    const mappedMissing=new Set((afterPlan.summary?.unresolvedMapped || []).map(item=>item.target));
+    const missingRequired = afterWork.elements.some(el =>
+      el.section === decision.section && mappedMissing.has(el.index) && isEmptyRequiredField(el));
+    const status = noLocalMapping && !missingRequired ? 'no-data' :
+      result.ok && !missingRequired && (inlineComplete || savedRecord || savedSingleton) ? 'verified' : 'blocked';
     if (status === 'verified') {
-      const source=resume[sectionCollection(decision.section)];
-      const total=decision.section==='实习/工作经历' ? (resume.internship?.length || 0)+(resume.work?.length || 0) : Array.isArray(source) ? source.length : 1;
+      const source=resume[activeBlock];
+      const total=Array.isArray(source) ? source.length : 1;
       if ((decision.recordIndex || 0)+1>=total) {
         const sectionKey=`${decision.section}|*`;
-        ledger[sectionKey]={...ledger[sectionKey],focusBlocked:true,workBlocked:true};
+        const state=ledger[sectionKey] || {};
+        ledger[sectionKey]={...state,activeBlock:null,focusBlocked:false,workBlocked:false,
+          savedCount:0,completedBlocks:[...new Set([...(state.completedBlocks || []),activeBlock])]};
       }
     }
     if (noAvailableAction) {
@@ -1712,7 +1883,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
         status:result.terminal ? '网站未确认上传' : noProgress ? '页面没有产生变化' : '待处理（等待复查）'};
     if (status === 'verified') {
       for (let i=pendingIssues.length-1;i>=0;i-=1) {
-        if (pendingIssues[i].field === decision.section || pendingIssues[i].field.startsWith(`${decision.section} `)) {
+        if (pendingIssues[i].field.startsWith(`${decision.section} ${activeBlock} `)) {
           pendingIssues.splice(i,1);
         }
       }
@@ -1721,23 +1892,29 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       const needsResume = scopedControls.some(el => el.context !== 'popup' && el.kind === 'file' && /上传简历|简历附件/.test(String(el.label || '')));
       const resumeFile = resume.basics?.resumeFile || resume.resumeFile || resume.attachment;
       if (needsResume && !resumeFile?.dataUrl) {
-        addPendingIssue('上传 上传简历', '本地资料中缺少简历附件文件；头像已正常上传');
+        addPendingIssue('上传 上传简历', '本地资料中缺少简历附件文件');
       }
     }
-    sections.push({section:decision.section,recordIndex:decision.recordIndex ?? Math.max(0,anchorCount-1),status,reason:result.reason || ''});
-    const exhausted = status === 'blocked' && (result.terminal || noProgress || noAvailableAction || previousAttempts + 1 >= 3);
+    sections.push({section:decision.section,dataBlock:activeBlock,
+      recordIndex:decision.recordIndex ?? Math.max(0,anchorCount-1),status,reason:result.reason || ''});
+    const exhausted = status === 'blocked' && (result.returned || result.terminal || noProgress || noAvailableAction || previousAttempts + 1 >= 3);
     if (exhausted) {
       for (const issue of result.pendingIssues || []) {
-        addPendingIssue(`${decision.section} ${issue.field || ''}`.trim(), issue.reason);
+        addPendingIssue(`${decision.section} ${activeBlock} ${issue.field || ''}`.trim(), issue.reason);
       }
-      addPendingIssue(decision.section, result.reason || '当前分区未完成');
+      addPendingIssue(`${decision.section} ${activeBlock}`, result.reason || '当前资料块未完成');
+    }
+    if (status === 'no-data' || exhausted) {
+      const sectionKey=`${decision.section}|*`;
+      const state=ledger[sectionKey] || {};
+      ledger[sectionKey]={...state,activeBlock:null,workBlocked:false,focusBlocked:false,
+        blockedBlocks:[...new Set([...(state.blockedBlocks || []),activeBlock])],savedCount:0};
     }
     report({step:turn,phase:'section',action:`「${decision.section}」${status === 'verified' ? '已回读，返回分区清单' : status === 'no-data' ? '没有本地映射字段，继续其他分区' : '保留待处理，继续其他分区'}`});
     // 被 runAgent 填完后，网页可能多出记录或必填提示；每次都重新快照生成清单。
-    if (!planBefore.actions.length && status === 'verified') ledger[key] = {completed:true,status:'无本地映射字段'};
   }
   await auditRequiredFields();
-  return {ok:false,reason:'分区调度超过 80 轮，已停止避免循环',sections,pendingIssues};
+  return {ok:false,reason:'分区调度超过 160 轮，已停止避免循环',sections,pendingIssues};
 }
 
 async function runFill(msg) {

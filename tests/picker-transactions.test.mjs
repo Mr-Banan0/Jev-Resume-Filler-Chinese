@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { buildActionPlan, choose, prepareResume, getResumeValue } from '../lib/jev-client.js';
+import { buildActionPlan, choose, prepareResume, getResumeValue, popupMatchesValue } from '../lib/jev-client.js';
+assert.equal(popupMatchesValue({label:'企业招聘官网、公众号'}, '校园招聘官网'), true,
+  '招聘官网来源可匹配网站的企业招聘官网选项');
 const resume = { basics: { birthDate: '2001-02-10', nativePlace: '浙江省杭州市西湖区',
   nativePlaceDetail: { province: '浙江省', city: '杭州市', district: '西湖区' },
   idType: '身份证', idNumber: 'TEST-PRIVATE-ID' } };
@@ -20,6 +22,12 @@ assert.equal(p.actions[0].target,'f0_3:1');
 columns[2].value='10日';
 assert.equal(buildActionPlan(columns,resume,history).actions[0].target,'f0_9');
 const option=(index,label,role='option',checked=false)=>({index,label,role,checked,kind:'option-item',context:'popup',operations:['CLICK']});
+assert.equal(popupMatchesValue(option('sep','九月'),'9'),true,
+  'Moka 中文月选项应匹配简历中的数字月份');
+assert.equal(popupMatchesValue(option('nov','十一月'),'11'),true,
+  '双位数月份同样应精确匹配');
+assert.equal(popupMatchesValue(option('ordinary','第九项'),'9'),false,
+  '月份转换只适用于明确的月选项');
 const beisenEthnicity={basics:{ethnicity:'汉族'}};
 assert.equal(buildActionPlan([option('han','汉族','radio'),confirm],beisenEthnicity,
   [{kind:'click',resumeField:'basics.ethnicity'}]).actions[0].target,'han');
@@ -45,6 +53,21 @@ console.log('✓ 日期逐列验证、两级地址叶节点、精确字段绑定
 
 const shortRegion = buildActionPlan([option('p','浙江'),confirm],resume,[{kind:'click',resumeField:'basics.nativePlace'}]);
 assert.equal(shortRegion.actions[0].target,'p');
+const partialRegionControl={index:'native-place',kind:'custom-select',label:'籍贯',value:'浙江',operations:['CLICK']};
+assert.ok(buildActionPlan([partialRegionControl],resume,[],{url:'https://app.mokahr.com/apply'}).actions
+  .some(action=>action.target==='native-place' && action.resumeField==='basics.nativePlace'),
+  '级联地址只选到省份时，应继续打开市县选择');
+const partialRegionWithPopup=buildActionPlan([partialRegionControl,option('city','杭州')],resume,
+  [{kind:'click',context:'popup',label:'浙江',resumeField:'basics.nativePlace',controlKind:'option-item'}],
+  {url:'https://app.mokahr.com/apply'});
+assert.equal(partialRegionWithPopup.actions[0]?.target,'city',
+  'Moka 级联地址应持续绑定到县级完成后再退出选择器事务');
+assert.deepEqual(buildActionPlan([
+  partialRegionControl,
+  {index:'email',kind:'input',label:'邮箱',value:'',operations:['TYPE_TEXT']}
+],{...resume,basics:{...resume.basics,email:'test@example.com'}},[],
+{url:'https://app.mokahr.com/apply'}).actions.map(action=>action.target),['native-place'],
+  'Moka 级联地址事务与普通字段分开决策');
 const interviewResume=prepareResume({
   basics:{location:{city:'南京',region:{province:'浙江省',city:'南京市',district:'建邺区'}}},
   application:{interviewSite:'南京'}
@@ -107,12 +130,12 @@ const commitMajorPlan=buildActionPlan([{...customMajorInput,value:'示例交叉�
   [{kind:'type_text',context:'popup',resumeField:'education[0].area'}],{url:'https://app-tc.mokahr.com/apply'});
 assert.equal(commitMajorPlan.actions[0].target,'commit-major');
 const committedSchoolPlan=buildActionPlan([
-  {index:'school',kind:'combobox',operations:['TYPE_TEXT','CLICK'],label:'学校名称',value:'学校甲',valueCommitted:true},
+  {index:'school',kind:'combobox',fieldProtocol:'search-select',operations:['TYPE_TEXT','CLICK'],label:'学校名称',value:'学校甲',valueCommitted:true},
   option('unrelated','校招面试站点')
 ],eduResume,[{kind:'click',context:'popup',controlKind:'option-item',resumeField:'education[0].institution'}]);
 assert.ok(!committedSchoolPlan.actions.some(action=>action.resumeField==='education[0].institution'));
 const rawSchoolSearchPlan=buildActionPlan([
-  {index:'school',kind:'combobox',operations:['TYPE_TEXT','CLICK'],label:'学校名称',value:'学校甲',valueCommitted:false},
+  {index:'school',kind:'combobox',fieldProtocol:'search-select',operations:['TYPE_TEXT','CLICK'],label:'学校名称',value:'学校甲',valueCommitted:false},
   option('unrelated','校招面试站点')
 ],eduResume,[{kind:'click',context:'popup',controlKind:'option-item',resumeField:'education[0].institution'}],
 {url:'https://app-tc.mokahr.com/campus-recruitment/example'});
@@ -123,6 +146,35 @@ const committedStableDate=buildActionPlan([stableDateControl,option('unrelated',
   {education:[{startDate:'2025-09-01'}]},[{kind:'click',context:'popup',resumeField:'education[0].startDate.year',
     controlStableKey:stableDateControl.stableKey}],{url:'https://app-tc.mokahr.com/campus-recruitment/example'});
 assert.ok(!committedStableDate.actions.some(action=>action.resumeField==='education[0].startDate.year'));
+const mokaDateResume={education:[
+  {startDate:'2025-09-01',endDate:'2026-11-30'},
+  {startDate:'2021-09-01',endDate:'2025-06-30'}
+]};
+const mokaLanguagePlan=buildActionPlan([
+  {index:'english-proof',kind:'custom-select',label:'请选择您满足的英语能力证明标准',
+    section:'语言能力',value:'',operations:['CLICK']}
+],{languages:[{language:'英语',certificate:'IELTS',score:'7.0'}]},[],
+{url:'https://app.mokahr.com/campus-recruitment/example',platform:'moka-form',title:'语言能力'});
+assert.ok(mokaLanguagePlan.actions.some(action=>action.resumeField==='languages[0].certificate'),
+  'Moka 英语能力证明标准绑定本地 IELTS 证书');
+const mokaDateControls=[
+  ['入学年份','2025'],['入学月份','1'],['毕业年份','2026'],['毕业月份','1'],
+  ['入学年份','2021'],['入学月份','1'],['毕业年份','2025'],['毕业月份','1']
+].map(([label,value], index)=>({index:`moka-date-${index}`,kind:'custom-select',label,value,
+  operations:['CLICK'],section:'个人信息',recordIndex:Math.floor(index / 4),dateSlot:index % 4}));
+const mokaMonthPlan=buildActionPlan(mokaDateControls,mokaDateResume,[
+  {kind:'click',context:'popup',resumeField:'education[0].startDate.year',label:'2025'}
+],
+  {url:'https://app.mokahr.com/campus-recruitment/example',platform:'moka-form'});
+assert.deepEqual(mokaMonthPlan.actions.map(action=>action.resumeField),['education[0].startDate.month'],
+  'Moka 的年份已经回读后，计划器只开放同一段教育的入学月份');
+const highestDegreeFirst=buildActionPlan([
+  {index:'degree',kind:'custom-select',label:'最高学历',value:'',operations:['CLICK']},
+  ...mokaDateControls
+],{...mokaDateResume,basics:{highestDegree:'硕士'}},[],
+{url:'https://app.mokahr.com/campus-recruitment/example',platform:'moka-form'});
+assert.deepEqual(highestDegreeFirst.actions.map(action=>action.resumeField),['basics.highestDegree'],
+  'Moka 的最高学历尚未回读时，先完成上游选择再填写日期');
 const mokaTemporarilyClosedPlan=buildActionPlan([
   {index:'school',kind:'combobox',operations:['TYPE_TEXT','CLICK'],label:'学校名称',value:''},
   {index:'email',kind:'input',operations:['TYPE_TEXT'],label:'邮箱',value:''},
@@ -187,8 +239,8 @@ assert.equal(buildActionPlan([awardName],{awards:[{title:'奖项甲'},{title:'�
 const save={index:'save',kind:'action',label:'保存',operations:['CLICK']};
 assert.ok(!buildActionPlan([{...gpaControl,required:true},save],{education:[{}]},[],{title:'教育经历'}).actions.some(a=>a.target==='save'));
 const projectControls=['项目名称','项目职务','项目地点','项目职责','项目描述'].map((label,index)=>({index:`p${index}`,kind:'input',label,value:'',operations:['TYPE_TEXT']}));
-const projectPlan=buildActionPlan(projectControls,{projects:[{name:'项目甲',role:'开发',description:'描述甲'},{name:'项目乙'},{name:'项目丙'}]},[],{title:'项目经验'});
-assert.deepEqual(projectPlan.actions.map(a=>[a.target,a.resumeField]),[['p0','projects[0].name'],['p1','projects[0].role'],['p3','projects[0].role'],['p4','projects[0].description']]);
+const projectPlan=buildActionPlan(projectControls,{projects:[{name:'项目甲',role:'开发',responsibilities:'负责开发',description:'描述甲'},{name:'项目乙'},{name:'项目丙'}]},[],{title:'项目经验'});
+assert.deepEqual(projectPlan.actions.map(a=>[a.target,a.resumeField]),[['p0','projects[0].name'],['p1','projects[0].role'],['p3','projects[0].responsibilities'],['p4','projects[0].description']]);
 const skillResume=prepareResume({skills:[{name:'编程语言',items:[{skill:'Python',level:''},{skill:'TypeScript',level:'熟悉'}]}],awards:[{title:'国家发明专利（专利号：ZL TEST 123）'}]});
 assert.deepEqual(skillResume.patents,[{number:'ZL TEST 123'}]);
 assert.equal(skillResume.computerSkills.length,2);

@@ -44,8 +44,8 @@ for (const [placeholder,label] of [['请输入国家/地区','国家/地区'],['
   assert.ok(field && field.kind === 'custom-select' && field.label.includes(label) && field.operations.includes('CLICK'));
   assert.equal(field.value, '', `空的${label}下拉不能被字段标题误认为已有值`);
 }
-const geoResume = {basics:{nationality:'中国',nativePlace:'浙江省杭州市西湖区',
-  nativePlaceDetail:{province:'浙江省',city:'杭州市',district:'西湖区'}}};
+const geoResume = {basics:{nationality:'中国',nativePlace:'浙江省广州市天河区',
+  nativePlaceDetail:{province:'浙江省',city:'广州市',district:'天河区'}}};
 const geoFields = snapshot.elements.filter(el => ['请输入国家/地区','请输入籍贯'].includes(el.placeholder));
 const geoPlan = buildActionPlan(geoFields,geoResume,[],{title:'个人信息'});
 assert.ok(geoPlan.actions.some(action => action.resumeField === 'basics.nationality' && action.operation === 'CLICK'));
@@ -69,8 +69,8 @@ assert.ok(!eyPlan.actions.some(action => ['master-score','minor'].includes(actio
 const requiredGap = buildActionPlan([{index:'english-name',kind:'input',section:'个人信息',label:'英文名',required:true,value:'',operations:['TYPE_TEXT']}],
   {basics:{name:'示例姓名'}},[],{title:'个人信息',ignoreUnmapped:true});
 assert.equal(requiredGap.status,'blocked');
-const monthOnlyBirth = buildActionPlan([{index:'birth',kind:'input',section:'个人信息',label:'出生日期 (年龄)',value:'2003-02 (23岁)',operations:['CLICK']}],
-  {basics:{birthDate:'2001-02-10'}},[],{title:'个人信息',ignoreUnmapped:true});
+const monthOnlyBirth = buildActionPlan([{index:'birth',kind:'input',section:'个人信息',label:'出生日期 (年龄)',value:'2000-01 (26岁)',operations:['CLICK']}],
+  {basics:{birthDate:'2000-01-01'}},[],{title:'个人信息',ignoreUnmapped:true});
 assert.equal(monthOnlyBirth.status,'done');
 assert.equal(countRenderedRecords('实习经历',[
   {label:'公司名称 *',section:'实习经历'}, {label:'公司名称 *',section:'实习经历'}

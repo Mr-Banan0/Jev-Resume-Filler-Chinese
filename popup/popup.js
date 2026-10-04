@@ -5,7 +5,8 @@ const DEFAULT_RESUME_URL = chrome.runtime.getURL('data/resume-default.json');
 
 const state = {
   resume: null,
-  apiKey: ''
+  apiKey: '',
+  todo: null
 };
 
 function withoutReferralCode(resume) {
@@ -67,6 +68,14 @@ async function ensureContentScript(tabId) {
   } catch (err) {
     throw new Error(`注入 content script 失败：${err.message}`);
   }
+}
+
+async function snapshotCurrentPage() {
+  const tab = await getActivePageTab();
+  await ensureContentScript(tab.id);
+  const result = await chrome.runtime.sendMessage({ type: 'SNAPSHOT_TAB', resume: state.resume });
+  if (!result?.ok) throw new Error(result?.reason || '页面快照未返回结果');
+  return result;
 }
 
 function getPath(obj, path) {
@@ -154,7 +163,7 @@ function collectForm() {
 }
 
 const EDU_TEMPLATE = {
-  institution: '', country: '', area: '', department: '', studyType: '', degree: '', primaryDiscipline: '', startDate: '', endDate: '', gpa: '',
+  institution: '', country: '', area: '', department: '', studyType: '', studyMode: '', degree: '', primaryDiscipline: '', startDate: '', endDate: '', gpa: '',
   ranking: '', studentCadre: '', courses: [], schoolExperience: '', scholarships: '', lab: '', advisor: '', thesis: ''
 };
 const WORK_TEMPLATE = {
@@ -187,6 +196,10 @@ function renderEduList() {
         <label class="field"><span class="field-label">学历</span>
           <select data-list-bind="education.studyType" data-idx="${idx}">
             ${['', '大专', '本科', '硕士', '博士'].map(o => `<option value="${o}" ${edu.studyType === o ? 'selected' : ''}>${o || '未选'}</option>`).join('')}
+          </select></label>
+        <label class="field"><span class="field-label">学习方式</span>
+          <select data-list-bind="education.studyMode" data-idx="${idx}">
+            ${['', '全日制', '非全日制', '在职', '海外留学生', '港澳台留学生'].map(o => `<option value="${o}" ${edu.studyMode === o ? 'selected' : ''}>${o || '未选'}</option>`).join('')}
           </select></label>
       </div>
       <div class="form-row">
@@ -304,6 +317,97 @@ function renderPublicationList() {
   });
 }
 
+const TODO_STATUS = {
+  'ready-add': ['需新增', 'ready'],
+  'ready-open': ['可打开', 'ready'],
+  'ready-fill': ['可填写', 'ready'],
+  'completed': ['已回读', 'done'],
+  'no-local-data': ['缺本地资料', 'missing'],
+  'missing-data': ['字段待补', 'missing'],
+  'conflict': ['保留网页值', 'conflict'],
+  'blocked': ['等待返回', 'blocked'],
+  'unmapped-section': ['待识别分区', 'blocked'],
+  'needs-inspection': ['等待检查', 'blocked']
+};
+
+const FIELD_STATUS = {
+  completed: '已回读',
+  ready: '可填写',
+  'pending-readback': '等待回读',
+  'missing-data': '缺资料',
+  conflict: '保留网页值',
+  unmapped: '待映射'
+};
+
+function appendText(parent, tag, text, className = '') {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  element.textContent = text;
+  parent.appendChild(element);
+  return element;
+}
+
+function renderTodo(todo) {
+  const summary = document.getElementById('todo-summary');
+  const list = document.getElementById('todo-list');
+  if (!summary || !list) return;
+  list.replaceChildren();
+  const items = todo?.items || [];
+  if (!items.length) {
+    summary.textContent = '当前页面没有识别到可填写分区。';
+    appendText(list, 'li', '页面可能仍在加载，或当前区域尚未展开。', 'todo-empty');
+    return;
+  }
+  const counts = todo.counts || {};
+  const ready = (counts['ready-add'] || 0) + (counts['ready-open'] || 0) + (counts['ready-fill'] || 0);
+  const waiting = (counts['no-local-data'] || 0) + (counts['missing-data'] || 0) +
+    (counts.conflict || 0) + (counts['unmapped-section'] || 0) + (counts.blocked || 0);
+  summary.textContent = `发现 ${items.length} 个分区：可处理 ${ready} 个，待核对 ${waiting} 个。`;
+  for (const item of items) {
+    const card = document.createElement('li');
+    card.className = `todo-card ${TODO_STATUS[item.status]?.[1] || 'blocked'}`;
+    const top = document.createElement('div');
+    top.className = 'todo-card-top';
+    appendText(top, 'strong', item.section || '未命名分区', 'todo-section');
+    appendText(top, 'span', TODO_STATUS[item.status]?.[0] || item.status, 'todo-badge');
+    card.appendChild(top);
+    const sourceSummary=item.blockSelection==='selected' ? `已关联 ${item.collection}：${item.localRecords} 条` :
+      `资料块待 Jev 关联（标题提示 ${item.localRecords} 条）`;
+    appendText(card, 'p', `网页 ${item.renderedRecords} 条 · ${sourceSummary} · 字段组 ${item.fieldCounts?.total || 0} 个`, 'todo-meta');
+    appendText(card, 'p', `下一项：${item.nextAction || '读取当前字段状态'}`, 'todo-next');
+    appendText(card, 'p', item.reason || '页面正在等待检查', 'todo-reason');
+    const attention = (item.fields || []).filter(field => field.status !== 'completed');
+    if (attention.length) {
+      const fields = document.createElement('ul');
+      fields.className = 'todo-fields';
+      for (const field of attention.slice(0, 6)) {
+        const row = document.createElement('li');
+        const record = Number.isInteger(field.recordIndex) ? `第 ${field.recordIndex + 1} 条 · ` : '';
+        appendText(row, 'span', `${record}${field.label}`, 'todo-field-name');
+        appendText(row, 'span', FIELD_STATUS[field.status] || field.status, 'todo-field-status');
+        fields.appendChild(row);
+      }
+      if (attention.length > 6) appendText(fields, 'li', `另有 ${attention.length - 6} 个待处理字段组`, 'todo-field-more');
+      card.appendChild(fields);
+    }
+    list.appendChild(card);
+  }
+}
+
+async function refreshTodo({logResult = true} = {}) {
+  try {
+    const result = await snapshotCurrentPage();
+    state.todo = result.todo || null;
+    renderTodo(state.todo);
+    if (logResult) appendLog(`填写清单已更新：${state.todo?.items?.length || 0} 个分区`, 'ok');
+    return result;
+  } catch (err) {
+    renderTodo(null);
+    if (logResult) appendLog(`填写清单读取失败: ${err.message}`, 'err');
+    throw err;
+  }
+}
+
 function escapeAttr(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -329,6 +433,7 @@ document.addEventListener('click', async (e) => {
     document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === t));
     document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.dataset.pane === tab));
     if (tab === 'settings') refreshStatus();
+    if (tab === 'todo') refreshTodo().catch(() => {});
     return;
   }
   if (t.classList && t.classList.contains('item-remove')) {
@@ -448,11 +553,10 @@ document.addEventListener('click', async (e) => {
   }
   if (t.id === 'btn-test-snapshot') {
     try {
-      const tab = await getActivePageTab();
-      await ensureContentScript(tab.id);
-      // 走 SW 汇总所有 frame，和自动填写用同一条链路
-      const res = await chrome.runtime.sendMessage({ type: 'SNAPSHOT_TAB', resume: state.resume });
-      if (res && res.ok) {
+      // 走 SW 汇总所有 frame，和自动填写用同一条链路。
+      const res = await snapshotCurrentPage();
+      renderTodo(res.todo || null);
+      if (res) {
         appendLog(
           `快照成功: ${res.count} 个可交互控件（${res.frames} 个 frame，其中 ${res.framesWithElements} 个含控件）`,
           'ok'
@@ -476,6 +580,10 @@ document.addEventListener('click', async (e) => {
     } catch (err) {
       appendLog(`快照失败: ${err.message}`, 'err');
     }
+    return;
+  }
+  if (t.id === 'btn-refresh-todo') {
+    await refreshTodo();
     return;
   }
   if (t.id === 'btn-dump-struct') {

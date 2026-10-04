@@ -69,8 +69,8 @@ assert.ok(buildActionPlan([{index:'1',role:'option',kind:'option',label:'实习'
   {internship:[{company:'测试公司'}]},[{kind:'click',formRule:'iter-internship-work-type'}],
   {title:'社会实习经历',recordIndex:0}).actions.some(action=>action.formRule==='iter-internship-work-type'));
 assert.ok(buildActionPlan([{index:'1',role:'textbox',kind:'input',label:'项目职责',value:'',operations:['TYPE_TEXT']}],
-  {projects:[{description:'完成项目设计与开发'}]},[],{title:'项目经验',recordIndex:0})
-  .actions.some(action=>action.resumeField==='projects[0].description'));
+  {projects:[{responsibilities:'完成项目设计与开发'}]},[],{title:'项目经验',recordIndex:0})
+  .actions.some(action=>action.resumeField==='projects[0].responsibilities'));
 const campusResume={campusPractice:[
   {position:'班长',startDate:'2022-09-01',endDate:'2025-06-01',summary:'示例大学班长'},
   {position:'志愿者',startDate:'2021-09-01',endDate:'2025-06-30',summary:'志愿服务超过200小时'}

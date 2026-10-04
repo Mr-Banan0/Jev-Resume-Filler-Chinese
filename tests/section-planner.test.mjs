@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildActionPlan, buildSectionPlan, classifyRecordAddition, countRenderedRecords } from '../lib/jev-client.js';
+import { buildActionPlan, buildSectionPlan, classifyRecordAddition, countRenderedRecords, isRecordSaveControl } from '../lib/jev-client.js';
 
 const control = (index, section, label, kind = 'input') => ({
   index, section, label, kind, domOrder:Number(index.replace(/\D/g, '')),
@@ -18,6 +18,32 @@ const elements = [
   control('4','实习经历','实习职责')
 ];
 const plan = buildSectionPlan(elements,resume);
+assert.equal(countRenderedRecords('语言能力',[
+  {...control('85','语言能力','请选择您满足的英语能力证明标准','custom-select'),operations:['CLICK']}
+]),1,'Moka 已显示的英语能力证明行计为一条语言记录');
+assert.equal(countRenderedRecords('语言能力',[
+  {...control('85a','语言能力','请选择您满足的英语能力证明标准','custom-select'),recordIndex:1,operations:['CLICK']},
+  {...control('85b','语言能力','请上传证明文件','file'),recordIndex:1,operations:['UPLOAD_FILE']}
+]),1,'Moka 单条英语证明按稳定行锚点计数，忽略误标的容器记录索引');
+const completedMokaLanguage = buildActionPlan([
+  {...control('85c','语言能力','添加','action'),operations:['CLICK'],domOrder:1},
+  {...control('85d','语言能力','请选择您满足的英语能力证明标准','custom-select'),
+    value:'IELTS≥6.0',operations:['CLICK'],domOrder:2}
+], {languages:[{language:'英语',certificate:'IELTS',score:'7.0'}]}, [],
+  {title:'语言能力',url:'https://app.mokahr.com/apply',scopedSection:true,allowAddRecords:false});
+assert.ok(!completedMokaLanguage.actions.some(action=>action.target==='85c'),
+  '语言证明选好后，标题栏添加按钮不能充当保存按钮');
+assert.equal(isRecordSaveControl(
+  {index:'85c',label:'添加',kind:'action',operations:['CLICK'],domOrder:1},
+  [{index:'85c',label:'添加',kind:'action',operations:['CLICK'],domOrder:1},
+   {index:'85d',label:'语言证明',kind:'custom-select',domOrder:2}]),false,
+  '分区标题栏添加不阻止内联记录验收');
+const mokaOtherPlan=buildSectionPlan([
+  {...control('86','其他','AI实操水平自评','custom-select'),operations:['CLICK']},
+  {...control('87','其他','添加','action'),operations:['CLICK']}
+],{application:{emergencyContactName:'示例联系人'}});
+assert.ok(!mokaOtherPlan.actions.some(action=>action.operation==='ADD_RECORD'),
+  '已有单例表单行时，其他分区不会重复新增空白行');
 assert.equal(countRenderedRecords('教育经历',[
   {...control('90','教育经历','学校'),placeholder:'请填写学校'},
   {...control('91','教育经历','学校'),placeholder:'请填写学校'}]),2,
@@ -281,9 +307,9 @@ assert.equal(countRenderedRecords('教育背景', [
 const projectPlan = buildActionPlan([
   control('10','项目经验','项目描述','textarea'), control('11','项目经验','项目职责','textarea'),
   control('12','项目经验','项目描述','textarea'), control('13','项目经验','项目职责','textarea')
-], {projects:[{description:'项目甲',role:'负责人'},{description:'项目乙',role:'开发'}]}, [], {title:'项目经验'});
+], {projects:[{description:'项目甲',responsibilities:'负责人'},{description:'项目乙',responsibilities:'开发'}]}, [], {title:'项目经验'});
 assert.deepEqual(projectPlan.actions.filter(a => /项目(?:描述|职责)/.test(a.label)).map(a => a.resumeField), [
-  'projects[0].description','projects[0].role','projects[1].description','projects[1].role'
+  'projects[0].description','projects[0].responsibilities','projects[1].description','projects[1].responsibilities'
 ]);
 
 const indexedProjectPlan = buildActionPlan([
@@ -291,9 +317,9 @@ const indexedProjectPlan = buildActionPlan([
   {...control('15','项目经验','项目职责','textarea'),recordIndex:1},
   {...control('16','项目经验','项目描述','textarea'),recordIndex:0},
   {...control('17','项目经验','项目职责','textarea'),recordIndex:0}
-], {projects:[{description:'项目甲',role:'负责人'},{description:'项目乙',role:'开发'}]}, [], {title:'项目经验'});
+], {projects:[{description:'项目甲',responsibilities:'负责人'},{description:'项目乙',responsibilities:'开发'}]}, [], {title:'项目经验'});
 assert.deepEqual(indexedProjectPlan.actions.filter(a => /项目(?:描述|职责)/.test(a.label)).map(a => a.resumeField), [
-  'projects[1].description','projects[1].role','projects[0].description','projects[0].role'
+  'projects[1].description','projects[1].responsibilities','projects[0].description','projects[0].responsibilities'
 ], 'section 内容排序变化时仍按 recordIndex 绑定记录');
 
 const awardPlan = buildActionPlan([
@@ -449,8 +475,10 @@ const missingCityEditor = [
   {...control('105','语言能力','语言能力','section-entry'),operations:['CLICK']}
 ];
 const skipCity = buildSectionPlan(missingCityEditor,resume,{}, {activeSection:'求职意向'});
-assert.equal(skipCity.actions.find(a=>a.operation==='DEFER_SECTION')?.target,'104');
-assert.ok(!skipCity.actions.some(a=>a.operation==='EXIT_SECTION_MENU'),'真实退出入口替代无效果的虚拟退出');
+assert.ok(skipCity.actions.some(a=>a.operation==='WORK_SECTION'), '进入当前 section 后由 Jev 判断可用资料块');
+const unmatchedCity=buildSectionPlan(missingCityEditor,resume,{'求职意向|*':{deferred:true}}, {activeSection:'求职意向'});
+assert.equal(unmatchedCity.actions.find(a=>a.operation==='DEFER_SECTION')?.target,'104');
+assert.ok(!unmatchedCity.actions.some(a=>a.operation==='EXIT_SECTION_MENU'),'真实退出入口替代无效果的虚拟退出');
 assert.ok(!skipCity.actions.some(a=>a.section==='语言能力'),'先确认退出当前编辑器再跨分区');
 const afterSkip = buildSectionPlan(missingCityEditor.filter(el=>['101','105'].includes(el.index)),resume,
   {'求职意向|*':{deferred:true}}, {activeSection:'求职意向'});

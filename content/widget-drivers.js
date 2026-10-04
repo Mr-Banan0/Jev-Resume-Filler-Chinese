@@ -41,6 +41,13 @@
   function readValue(el, { family, hostname, tidy, editableText, isEditable, label }) {
     if (family === 'choice' && el.classList?.contains('cur')) return tidy(el.textContent || '');
     if (el.tagName === 'SELECT') return el.options?.[el.selectedIndex]?.text || '';
+    // Moka 的下拉框使用可写 input 作为事件入口，但选中值渲染为该 input
+    // 前方的展示节点。先读取展示值，避免把空 input 当成“尚未填写”，从而
+    // 让后续的年、月或相邻字段抢走当前选择事务。
+    if (/(^|\.)mokahr\.com$/i.test(hostname) && ['virtual-select', 'autocomplete'].includes(family)) {
+      const mokaValue = readMokaSelectedValue(el, { tidy, label });
+      if (mokaValue) return mokaValue;
+    }
     if (isEditable(el)) return editableText(el).slice(0, 200);
     if (family === 'virtual-select' && el.closest?.('.phoenix-select')) {
       const text = tidy(el.closest('.phoenix-select').innerText || el.closest('.phoenix-select').textContent || '');
@@ -67,6 +74,33 @@
       return readAdjacentMokaDate(el, { family, hostname, tidy });
     }
     return el.value || '';
+  }
+
+  function readMokaSelectedValue(el, { tidy, label }) {
+    const input = el.matches?.('input') ? el : el.querySelector?.('input');
+    if (!input) return '';
+    const placeholder = tidy(input.getAttribute?.('placeholder') || '');
+    const clean = text => tidy(text || '')
+      .replace(/必填项未填写/g, '')
+      .replace(/[\ue000-\uf8ff]/g, '')
+      .replace(/[×✕]/g, '')
+      .trim();
+    // 已选状态的展示文本是 input 的直接前置同级节点；从最近节点开始可避免
+    // 误将同一表单项的标题或校验提示拼入值中。
+    for (let node = input.previousElementSibling; node; node = node.previousElementSibling) {
+      const value = clean(node.innerText || node.textContent || '');
+      if (value && value !== placeholder && normalize(value) !== normalize(label)) return value;
+    }
+    const selectedDate = readAdjacentMokaDate(input, { family: 'virtual-select', hostname: 'mokahr.com', tidy });
+    if (selectedDate) return selectedDate;
+    // 少数租户用同级节点的父容器承载展示值，保留为回退并剥离标题、占位和错误。
+    for (let node = input.parentElement; node && node !== input.parentElement?.parentElement?.parentElement;
+      node = node.parentElement) {
+      let value = clean(node.innerText || node.textContent || '');
+      value = value.replace(placeholder, '').replace(tidy(label || ''), '').trim();
+      if (value && !/^(?:请选择|请输入)$/.test(value) && value.length <= 60) return value;
+    }
+    return '';
   }
 
   function readAdjacentMokaDate(el, { family, hostname, tidy }) {
