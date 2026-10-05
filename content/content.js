@@ -3,7 +3,7 @@
 
 (function () {
   // Popup 在扩展重载后用此版本识别遗留页面中的旧 content script，并主动替换。
-  const CONTENT_SCRIPT_VERSION = '2026-09-30.61';
+  const CONTENT_SCRIPT_VERSION = '2026-10-05.37';
   const previousContentVersion = globalThis.__jevResumeFillerContentVersion;
   if (previousContentVersion && previousContentVersion !== CONTENT_SCRIPT_VERSION) {
     // Chrome 重载扩展时会保留页面隔离世界。释放旧实例的注册标记，让新代码
@@ -26,7 +26,7 @@
     classify: ({ kind }) => kind,
     operations: null,
     readValue: null,
-    stableKey: (entry, occurrence) => [entry.section, entry.context, entry.kind, entry.role, entry.label, occurrence].filter(Boolean).join('|'),
+    stableKey: (entry, occurrence) => entry.nodeKey || [entry.section, entry.context, entry.kind, entry.role, entry.label, occurrence].filter(Boolean).join('|'),
     closeOpenTransactions: null
   };
   const platformDrivers = globalThis.JevPlatformDrivers || {
@@ -43,8 +43,19 @@
   // 快照记录少量执行策略，例如飞书可视卡片需要完整指针序列。该元数据只在
   // 当前快照到下一次执行之间有效，页面重扫后会随注册表一起刷新。
   let elementMetaRegistry = [];
+  const observedMonthControls = new WeakSet();
+  let transactionTrigger = null;
   let activeLayer = null;
   let sectionMarkers = [];
+  const documentId = globalThis.crypto?.randomUUID?.() || `doc-${Date.now()}-${Math.random()}`;
+  const nodeIds = new WeakMap();
+  let nextNodeId = 0;
+  let selectedSection = '';
+  const nodeId = node => {
+    if (!node) return '';
+    if (!nodeIds.has(node)) nodeIds.set(node,`${documentId}:n${++nextNodeId}`);
+    return nodeIds.get(node);
+  };
 
   const FORM_SECTION_TITLES = new Set([
     '申请信息', '上传', '个人信息', '教育背景', '教育经历', '实习经历', '工作经历',
@@ -54,7 +65,8 @@
     '个人基本信息', '奖励活动', '社会实践经历', '所获证书', '附加信息', '家庭关系', '获奖情况',
     '英语能力', '其他外语能力', '计算机技能', '证书', '校内职务', '培训经历',
     '个人专利', '发明专利', '专利', '论文著作', '论文', '发表论文',
-    '其他家庭成员关系', '自我评价', '个人承诺', '基本信息', '基础信息', '附件简历', '获奖', '作品', '社交账号'
+    '其他家庭成员关系', '自我评价', '个人承诺', '基本信息', '基础信息', '附件简历', '获奖', '作品', '社交账号',
+    '论文/专著', '附加问题', '公司及应聘者声明', '候选人声明', '社会实习经历', '奖励', '技能特长'
   ]);
 
   // 同一控件族会部署在企业自有域名；以渲染后的表单结构识别，域名仅作早期兜底。
@@ -65,6 +77,10 @@
 
   function isFeishuJobsPage() {
     return /(^|\.)jobs\.feishu\.cn$/i.test(location.hostname);
+  }
+
+  function isBeisenFormPage() {
+    return platformDrivers.platformId(location.hostname, document) === 'beisen';
   }
 
   function feishuDateRangeContainer(el) {
@@ -147,17 +163,32 @@
   }
 
   function structuredFieldCaption(el) {
+    const formilyRow = el.closest('.ud-formily-item');
+    if (formilyRow) {
+      const caption = Array.from(formilyRow.querySelectorAll('.ud-formily-item-label')).find(node =>
+        node.closest('.ud-formily-item') === formilyRow);
+      const text = tidyLabel(caption?.textContent || '').replace(/\s*[*＊]\s*$/, '').trim();
+      if (text) {
+        const inputs = Array.from(formilyRow.querySelectorAll('input')).filter(input =>
+          input.closest('.ud-formily-item') === formilyRow &&
+          input.closest('.ud__picker,.throne-biz-date-range-picker-input'));
+        const slot = inputs.indexOf(el);
+        return inputs.length === 2 && slot >= 0 ? `${text} · ${slot === 0 ? '开始时间' : '结束时间'}` : text;
+      }
+    }
     const row = el.closest('.form-item');
     if (!row || (row.querySelectorAll('input,select,textarea').length || 0) > 2) return '';
     for (const child of Array.from(row.children)) {
       if (child.contains(el) || child.querySelector('input,select,textarea')) continue;
       const caption = tidyLabel(child.innerText || child.textContent || '');
-      if (isFieldCaption(caption)) return caption.replace(/\s*\*\s*$/, '').trim();
+      if (isFieldCaption(caption) || FORM_SECTION_TITLES.has(caption)) return caption.replace(/\s*\*\s*$/, '').trim();
     }
     return '';
   }
 
   function fileFieldLabel(el) {
+    const structured=structuredFieldCaption(el);
+    if (structured) return structured;
     const explicit = labelFor(el)?.textContent || el.closest('label')?.textContent || '';
     if (isFieldCaption(explicit)) return tidyLabel(explicit);
     let node = el.parentElement;
@@ -175,10 +206,32 @@
     return nearestFieldCaption(el) || '上传文件';
   }
 
+  function fileUploadArea(el) {
+    const row = el.closest('.ud-formily-item,.form-item,.el-form-item,.ant-form-item');
+    if (row && row.querySelectorAll('input[type="file"]').length === 1) return row;
+    return el.closest('[class*="upload" i]')?.parentElement || el.parentElement;
+  }
+
+  function fileUploadPending(el) {
+    if (/上传中|uploading|正在上传|正在解析/i.test(fileUploadArea(el)?.textContent || '')) return true;
+    return Array.from(document.querySelectorAll('[role="dialog"],[class*="modal" i],[class*="message" i]'))
+      .some(node => isVisible(node) && /上传中|uploading|正在上传|正在解析/i.test(node.textContent || ''));
+  }
+
+  function isOptionalResumeParser(el) {
+    let node=el.parentElement;
+    for (let depth=0; node && depth<7; depth++,node=node.parentElement) {
+      if (node.querySelectorAll('input[type="file"]').length>1) break;
+      if (/解析/.test(node.textContent || '') && /简历/.test(node.textContent || '')) {
+        return Array.from(document.querySelectorAll('input[type="file"]')).some(peer=>
+          peer!==el && /简历附件/.test(fileFieldLabel(peer)));
+      }
+    }
+    return false;
+  }
+
   function fileFieldValue(el) {
-    if (el.files?.[0]?.name) return el.files[0].name;
-    if (location.hostname === 'xiaoyuan.zhaopin.com' &&
-        el.parentElement?.querySelector('.uploader-img img[src]')) return '已上传照片';
+    if (fileUploadPending(el)) return '';
     let node = el.parentElement;
     for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
       if ((node.querySelectorAll?.('input[type="file"]')?.length || 0) > 1) break;
@@ -187,7 +240,9 @@
       const match = text.match(/[\w\u4e00-\u9fff()（）.-]+\.(?:pdf|docx?|pptx?|wps|jpe?g|png|txt)\b/i);
       if (match) return match[0];
     }
-    return '';
+    if (fileUploadArea(el)?.querySelector('.uploader-img img[src],[class*="upload" i] img[src]')) return '已上传照片';
+    const asynchronous = !!el.closest('.ud-formily-item,[class*="upload" i]') || isMokaFormPage();
+    return asynchronous ? '' : el.files?.[0]?.name || '';
   }
 
   function buildSectionMarkers() {
@@ -221,6 +276,18 @@
   }
 
   function sectionForElement(el) {
+    const editor=el.closest?.('[role="dialog"],.el-dialog,.ant-modal,[class*="drawer"]');
+    if (editor && isRecordEditorSurface(editor) && selectedSection) return selectedSection;
+    const nav = el.closest?.('nav,aside,[role="navigation"]');
+    const navTitle = tidyLabel(el.textContent || '');
+    if (nav && FORM_SECTION_TITLES.has(navTitle)) return navTitle;
+    const summaryCard = el.closest?.('.resumeContent');
+    if (summaryCard) return selectedSection || [...FORM_SECTION_TITLES].find(title=>
+      tidyLabel(summaryCard.textContent || '').startsWith(title)) || '';
+    if (el.closest?.('.layui-layer-btn')) return activeSectionTitle();
+    const formilyModule = el.closest?.('[class*="applyFormModuleWrapper__"]');
+    const formilyTitle = formilyModule?.querySelector('.applyFormModuleWrapper-left');
+    if (formilyTitle) return tidyLabel(formilyTitle.textContent).replace(/\s*必填\s*$/, '').trim();
     const module = el.closest?.('.apply-module__body');
     const moduleTitle = module?.querySelector('.form-content--title-box h6,.form-content--title-box h2');
     if (moduleTitle) return tidyLabel(moduleTitle.textContent).replace(/\s*必填\s*$/, '').trim();
@@ -249,6 +316,16 @@
   }
 
   function activeSectionTitle() {
+    const editor=recordEditorSurface();
+    if(editor) {
+      const title=selectedSection || tidyLabel(editor.querySelector('h1,h2,h3,[role="heading"]')?.textContent || '').replace(/^(?:新增|添加|编辑)\s*/, '');
+      if(title) return title;
+    }
+    const selected = Array.from(document.querySelectorAll('nav .cur,aside .cur,[aria-current="page"]'))
+      .map(el=>tidyLabel(el.textContent || '')).find(title=>FORM_SECTION_TITLES.has(title));
+    const summary = Array.from(document.querySelectorAll('.resumeContent')).find(isVisible);
+    if (summary) return selected || selectedSection || [...FORM_SECTION_TITLES].find(title=>
+      tidyLabel(summary.textContent || '').startsWith(title)) || '';
     if (location.hostname === 'xiaoyuan.zhaopin.com') {
       const titleBox = Array.from(document.querySelectorAll('.form-content--title-box'))
         .find(isVisible);
@@ -263,15 +340,24 @@
 
   // 记录新增后，ATS 常把新表单放进 dialog / drawer / iframe。把这个观察值回传给
   // 调度器，用于区分“同页追加一行”和“已经进入独立编辑器”。
+  function isRecordEditorSurface(surface) {
+    if(surface.tagName==='IFRAME') return true;
+    const editable=surface.querySelectorAll('input:not([type="hidden"]),textarea,select,[contenteditable="true"]').length;
+    const commands=Array.from(surface.querySelectorAll('button,a,[role="button"]')).map(el=>tidyLabel(el.textContent || ''));
+    const save=commands.some(label=>/^(保存|添加|保存经历|save)$/i.test(label));
+    return editable>0 && save && (editable>1 || /编辑|添加|新增/.test(surface.querySelector('h1,h2,h3,[role="heading"]')?.textContent || ''));
+  }
+
   function hasEditorSurface() {
     const surfaces = Array.from(document.querySelectorAll(
       '[role="dialog"],.el-dialog,.ant-modal,[class*="drawer"],iframe[src*="resume"]'
     )).filter(isVisible);
-    return surfaces.some(surface => {
-      const editable = surface.querySelectorAll('input:not([type="hidden"]),textarea,select,[contenteditable="true"]').length;
-      const commands = tidyLabel(surface.textContent || '');
-      return editable > 0 && /(?:保存|提交|确定|取消|返回)/.test(commands);
-    });
+    return surfaces.some(isRecordEditorSurface);
+  }
+
+  function recordEditorSurface() {
+    return Array.from(document.querySelectorAll('[role="dialog"],.el-dialog,.ant-modal,[class*="drawer"]'))
+      .filter(el=>isVisible(el) && isRecordEditorSurface(el)).at(-1) || null;
   }
 
   function focusedEditorLayer() {
@@ -279,7 +365,46 @@
     // 编辑器；将其作为 active layer 会把整张简历表单裁成一串年份和月份。
     // 飞书的学校/专业检索层通过 popup 容器识别即可，无需依赖该全局裁剪。
     if (isFeishuJobsPage()) return null;
-    if (/(^|\.)zhiye\.com$/i.test(location.hostname)) {
+    const triggerHost=transactionTrigger?.isConnected && transactionTrigger.closest('.phoenix-select');
+    if (triggerHost) {
+      const anchor=triggerHost.getBoundingClientRect();
+      const phoenixLists=Array.from(document.querySelectorAll('[class*="phoenix-selectList__virtualList-holder-inner"]'))
+        .filter(list=>{
+          if (!isVisible(list)) return false;
+          const box=list.getBoundingClientRect();
+          const options=Array.from(list.querySelectorAll('li,[role="option"],[class*="selectList__item"]'))
+            .filter(item=>isVisible(item) && tidyLabel(item.textContent || ''));
+          return options.length>=2 && box.width>0 && box.height>0 && notOccluded(list,box) &&
+            box.width<=anchor.width*1.6 && box.height<window.innerHeight*.9 &&
+            Math.min(box.right,anchor.right)>Math.max(box.left,anchor.left) &&
+            Math.min(Math.abs(box.top-anchor.bottom),Math.abs(box.bottom-anchor.top))<320;
+        });
+      if (phoenixLists.length) return phoenixLists.sort((left,right)=>{
+        const a=left.getBoundingClientRect(),b=right.getBoundingClientRect();
+        return Math.min(Math.abs(a.top-anchor.bottom),Math.abs(a.bottom-anchor.top))-
+          Math.min(Math.abs(b.top-anchor.bottom),Math.abs(b.bottom-anchor.top));
+      })[0];
+      const choices=Array.from(document.querySelectorAll('ul,div')).filter(list=>{
+        if (!isVisible(list) || list.closest('nav,header,[role="navigation"]')) return false;
+        let floating=false;
+        for (let node=list,depth=0;node && node!==document.body && depth<4;node=node.parentElement,depth++) {
+          if (['absolute','fixed'].includes(window.getComputedStyle(node).position)) { floating=true; break; }
+        }
+        if (!floating) return false;
+        const rows=Array.from(list.children).filter(row=>isVisible(row) &&
+          !row.querySelector('input,textarea,select') && tidyLabel(row.textContent || '').length>0 &&
+          tidyLabel(row.textContent || '').length<=60);
+        if (new Set(rows.map(row=>tidyLabel(row.textContent || ''))).size<2) return false;
+        const box=list.getBoundingClientRect();
+        return box.width>0 && box.height>0 && notOccluded(list,box) &&
+          box.width<=anchor.width*1.5 && box.height<window.innerHeight*.9 &&
+          Math.min(box.right,anchor.right)>Math.max(box.left,anchor.left) &&
+          Math.min(Math.abs(box.top-anchor.bottom),Math.abs(box.bottom-anchor.top))<240;
+      });
+      if (choices.length) return choices.sort((a,b)=>a.getBoundingClientRect().width*a.getBoundingClientRect().height-
+        b.getBoundingClientRect().width*b.getBoundingClientRect().height)[0];
+    }
+    if (isBeisenFormPage()) {
       const searches=Array.from(document.querySelectorAll('input[placeholder="搜索"]')).filter(isVisible);
       for (const search of searches) {
         for (let parent=search.parentElement,depth=0;parent && parent!==document.body && depth<7;
@@ -500,8 +625,8 @@
   }
 
   // Ant Mobile 的 List.Item 下拉没有原生 select、ARIA role 或 pointer 光标。
-  // 荣耀把字段标题放在同一张 my-list-item 卡片的 header-title 中，真正响应点击的
-  // 是 am-list-extra。把这一组 DOM 结构识别为选择器，避免只采到文本输入框。
+  // 这类控件的标题位于 my-list-item 内的 header-title，点击区域是 am-list-extra。
+  // 按 DOM 结构识别选择器，同时采集它的字段标题。
   const AM_LIST_SELECT_SELECTOR = ".am-list-extra.select-am-list-extra, .datePicker-list-item-wrap .am-list-extra, .my-list-item .am-input-control:not(:has(input)):not(:has(textarea))";
 
   function isAmListSelect(el) {
@@ -526,6 +651,14 @@
   function deriveLabel(el) {
     if (el.matches('.set-wrap')) return tidyLabel(el.querySelector('.txt-title')?.textContent || el.textContent);
     if (el.matches('.mFormRadio li')) return `性别 · ${tidyLabel(el.textContent || '')}`;
+    if (el.matches('.phoenix-radio')) return structuredFieldCaption(el) || nearestFieldCaption(el);
+    if (el.matches('button,[role="button"]') && el.closest('.ud__picker-dropdown')) {
+      const signals = [el,...el.querySelectorAll('*')].map(node => [
+        String(node.className?.baseVal || node.className || ''),node.getAttribute('aria-label'),
+        node.getAttribute('data-icon'),node.getAttribute('data-name')].filter(Boolean).join(' ')).join(' ');
+      if (/prev|previous|left|backward/i.test(signals)) return '上一页';
+      if (/next|right|forward/i.test(signals)) return '下一页';
+    }
     if (/(^|\.)zhiye\.com$/i.test(location.hostname) && el.closest('.el-picker-panel') && el.matches('button')) {
       const className=String(el.className || '');
       if (/el-date-picker__prev-btn/.test(className)) return '上一页';
@@ -798,16 +931,16 @@
 
   function annotateRepeatedContainers(items) {
     const signature=node=>Array.from(node.querySelectorAll('input:not([type=hidden]),textarea,select'))
-      .slice(0,3).map(el=>el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.type).join('|');
+      .slice(0,4).map(el=>`${deriveLabel(el)}:${el.getAttribute('placeholder') || el.type}`).join('|');
     const metadata=new Map();
     for (const {stateEl,entry} of items) {
       if (entry.context==='popup' || Number.isInteger(entry.recordIndex) || !stateEl) continue;
       for (let node=stateEl.parentElement,depth=0;node && depth<9;node=node.parentElement,depth++) {
         if (!metadata.has(node)) {
           const controls=node.querySelectorAll('input:not([type=hidden]),textarea,select');
-          const peers=controls.length>=1 && !/^(?:text|radio|checkbox|textarea|select-one)(?:\|(?:text|radio|checkbox|textarea|select-one))*$/.test(signature(node)) ? Array.from(node.parentElement?.children || []).filter(peer=>
+          const peers=controls.length>=2 ? Array.from(node.parentElement?.children || []).filter(peer=>
             peer.tagName===node.tagName && peer.className===node.className &&
-            signature(peer)===signature(node) && peer.querySelectorAll('input:not([type=hidden]),textarea,select').length>=1) : [];
+            signature(peer)===signature(node) && peer.querySelectorAll('input:not([type=hidden]),textarea,select').length>=2) : [];
           metadata.set(node,peers.length>1 ? peers.indexOf(node) : null);
         }
         if (metadata.get(node)!==null) { entry.recordIndex=metadata.get(node); break; }
@@ -882,7 +1015,9 @@
     for (const item of items) {
       const {entry} = item;
       if (entry.context === 'popup') continue;
-      const label = compoundGroupLabel(item, items);
+      let label = compoundGroupLabel(item, items);
+      if (/手机号码|联系电话/.test(label) && entry.kind === 'custom-select' &&
+          /^\+\d{1,4}$/.test(String(entry.value || '').trim())) label += '区号';
       const section = tidyLabel(entry.section || '页面');
       const record = Number.isInteger(entry.recordIndex) ? `record-${entry.recordIndex + 1}` : 'single';
       const normalized = label.toLowerCase().replace(/[\s\-_/()（）【】\[\]{}:：,.，。'"`]+/g, '') || 'unlabeled';
@@ -896,15 +1031,17 @@
 
   function deriveRole(el) {
     if (el.matches('.my-button,.set-wrap')) return 'button';
-    if (el.matches('.mFormRadio li')) return 'radio';
+    if (el.matches('.mFormRadio li,.phoenix-radio')) return 'radio';
     const tag = el.tagName.toLowerCase();
     const role = el.getAttribute("role");
     const type = el.getAttribute("type");
+    if (role === 'radio' || role === 'checkbox') return role;
     if (isAmListSelect(el)) return "combobox";
     if (tag === "input") {
       if (type === "checkbox") return "checkbox";
       if (type === "radio") return "radio";
       if (type === "submit" || type === "button") return "button";
+      if (role === 'combobox' && el.hasAttribute('readonly')) return 'combobox';
       return "textbox";
     }
     if (tag === "textarea") return "textbox";
@@ -936,8 +1073,9 @@
   const DATE_HINT_RE = /(日期|时间|年月|生日|出生日期|\bdate\b|\btime\b)/i;
 
   function deriveKind(el, role) {
+    if (el.matches('nav a,aside a,[role="navigation"] a') && FORM_SECTION_TITLES.has(tidyLabel(el.textContent))) return 'section-entry';
     if (el.matches('.set-wrap')) return 'section-entry';
-    if (el.matches('.mFormRadio li')) return 'custom-radio';
+    if (el.matches('.mFormRadio li,.phoenix-radio')) return 'custom-radio';
     const tag = el.tagName.toLowerCase();
     const type = (el.getAttribute("type") || "").toLowerCase();
     const hasPopup = el.getAttribute("aria-haspopup");
@@ -974,9 +1112,10 @@
     if (isFeishuDateRange(el)) return 'feishu-date-range';
     // 飞书的获奖日期有时只提供一个年份输入框（placeholder=YYYY），右侧带日历
     // 图标。它和起止时间范围输入不同，按页面精度直接写年份，不打开无候选的日历层。
-    if (isFeishuJobsPage() && tag === 'input' && /^(?:YYYY|YYYY-MM)$/.test(mokaPlaceholder)) return 'feishu-year';
+    if (isFeishuJobsPage() && tag === 'input' && mokaPlaceholder === 'YYYY') return 'feishu-year';
+    if (tag === 'input' && el.closest('.ud__picker,.throne-biz-date-range-picker-input')) return 'date';
     // 北森（zhiye.com）使用 Element UI 的只读 input 承载日期；值只能由日历提交。
-    if (/(^|\.)zhiye\.com$/i.test(location.hostname) && tag === 'input' &&
+    if (isBeisenFormPage() && tag === 'input' &&
         (el.closest('.el-date-editor') || DATE_HINT_RE.test(fieldText))) return 'beisen-date';
     if (tag==='input' && /^请选择/.test(tidyLabel(el.getAttribute('placeholder') || '')) && !DATE_HINT_RE.test(labelText))
       return 'custom-select';
@@ -1001,7 +1140,8 @@
     if (type === "date" || type === "month" || type === "datetime-local") return "date";
     if (mokaSearch && (tag === 'input' || tag === 'textarea')) return 'combobox';
     if (role === "listbox") return "overlay";
-    if (role === "combobox" || hasPopup === "listbox" || hasPopup === "menu" || hasPopup === "tree") {
+    if (role === "combobox" || el.getAttribute('role') === 'combobox' ||
+        hasPopup === "listbox" || hasPopup === "menu" || hasPopup === "tree") {
       // 只有原生输入框才谈得上"打字联想"；div 类自定义下拉只能点开再选
       const typeable = (tag === "input" || tag === "textarea") && !isReadonly;
       return typeable ? "combobox" : "custom-select";
@@ -1134,6 +1274,7 @@
     '[class*="picker-panel"]',
     '[class*="autocomplete-list"]',
     '[class*="suggestion-list"]'
+    ,'[class*="phoenix-selectList__virtualList-holder-inner"]'
     ,'.constant-main-selector-container'
     ,'.area-selector-container'
     ,'.mFormSelect ul'
@@ -1156,13 +1297,7 @@
   ].join(",");
 
   function isFeishuMonthRangeOverlay(overlay) {
-    if (!isFeishuJobsPage()) return false;
-    const text = String(overlay?.innerText || overlay?.textContent || '').replace(/\s+/g, ' ').trim();
-    // 该控件分别渲染长年份列与 01–12 月列；这些视觉选项只服务于范围日期
-    // 事务，不应该被通用下拉扫描当成语言、学历等候选。
-    const months = /(?:010203040506070809101112|123456789101112)/.test(text.replace(/\s/g, ''));
-    const years = text.match(/(?:19|20)\d{2}/g) || [];
-    return months || years.length >= 12;
+    return isFeishuJobsPage() && !!overlay?.matches?.('.atsx-date-picker-period-month-panel');
   }
 
   // 飞书招聘站点的顶栏会常驻一个 role=menu 的“社招内推／校招内推”导航。
@@ -1220,6 +1355,7 @@
       if (!isVisible(overlay)) return;
       const r = overlay.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) return;
+      if (overlay.matches('[class*="phoenix-selectList"]') && !notOccluded(overlay,r)) return;
       if (isFeishuMonthRangeOverlay(overlay)) return;
 
       let candidates;
@@ -1242,14 +1378,11 @@
         // 已选的“至今”显示在日期输入框内部；它是字段值，不是打开的候选项。
         if (isFeishuJobsPage() && el.closest('.atsx-date-picker-period-month-label')) return;
         // 只取最内层可点条目：自身不再包含其它候选条目
-        if (!calendarCell && el.querySelector(OVERLAY_ITEM_SELECTOR)) return;
+        if (!calendarCell && !el.matches('button,[role="button"]') && el.querySelector(OVERLAY_ITEM_SELECTOR)) return;
         if (!isVisible(el)) return;
-        const ownText = (el.innerText || el.textContent || "").trim().replace(/\s+/g, " ");
+        const ownText = ((el.innerText || el.textContent || "").trim() ||
+          (el.matches('button,[role="button"]') ? deriveLabel(el) : '')).replace(/\s+/g, " ");
         if (!ownText || ownText.length > 60) return;
-        // 飞书年月范围选择器的列项有时被拆成独立浮层，父容器不再同时拥有
-        // 年份与月份。浮层里的纯数字只在该日期组件中出现，保持在组件内部，
-        // 不交给通用选项匹配器。
-        if (isFeishuJobsPage() && /^\d{1,4}$/.test(ownText)) return;
         // 同一个虚拟下拉可能同时保留两份渲染列表。年份/月数字项按文本去重，
         // 让目标年份能在单次快照的元素预算内出现。
         if (/^\d{1,4}$/.test(ownText) && !el.closest('td')) {
@@ -1300,8 +1433,10 @@
 
   // 原生可交互元素。采集与"页面结构体检"共用同一份定义，避免两处判定不一致。
   const INTERACTIVE_SELECTOR = [
+    '.layui-layer-btn a',
     '.set-wrap',
     '.mFormRadio li',
+    '.phoenix-radio',
     '.my-button',
     'input:not([type="hidden"])',
     "textarea",
@@ -1352,7 +1487,8 @@
   function inPopupContainer(el) {
     try {
       if (isFeishuNavigationLayer(el)) return false;
-      return !!el.closest(POPUP_CONTAINER_SELECTOR);
+      const surface=el.closest(POPUP_CONTAINER_SELECTOR);
+      return !!surface && !(surface.matches('.el-dialog') && isRecordEditorSurface(surface));
     } catch (_) {
       return false;
     }
@@ -1454,6 +1590,7 @@
       for (const el of all) {
         if (seen.has(el)) continue;
         if (el.closest('.el-picker-panel td')) continue;
+        if (el.closest('.phoenix-radio,.ud__select,.ud__picker,.throne-biz-date-range-picker-input')) continue;
         // 飞书的选择控件把可见的“请选择／当前值”包在 role=combobox 内。
         // 它已经由控件采集器提供统一的 custom-select 条目；不再把内部展示层
         // 额外收为卡片，后续的“添加语言／项目／获奖”入口就不会被这些重复项挤出预算。
@@ -1547,6 +1684,7 @@
           /^(?:开始月|结束月|入学月|毕业月|年月|YYYY-MM)$/.test(datePlaceholder))) {
         entry.datePrecision = 'month';
       }
+      if (observedMonthControls.has(stateEl) || (dateInput && observedMonthControls.has(dateInput))) entry.datePrecision='month';
       entry.pickerBranch = opts.context === 'popup' && !!(stateEl?.hasAttribute?.('aria-expanded') ||
         stateEl?.querySelector?.('[class*="youcejiantou"]') ||
         Array.from(stateEl?.parentElement?.children || []).some(peer=>peer!==stateEl && peer.querySelector?.('[class*="youcejiantou"]'))) &&
@@ -1554,6 +1692,8 @@
       entry.widgetFamily = widgetDrivers.classify({
         kind, role, tagName: stateEl?.tagName, editable: stateEl ? isEditableEl(stateEl) : false
       });
+      if (['input','textarea','combobox'].includes(kind) && stateEl?.matches?.('input,textarea') &&
+          stateEl.closest('.form-item--phoenix')) entry.textCommitMode='page-world';
       const repeaterSection = repeaterSectionFromLabel(opts.label);
       const section = opts.section || repeaterSection || sectionForElement(targetEl || stateEl);
       if (section) entry.section = section;
@@ -1576,6 +1716,10 @@
         }
       }
       let localRequired = !!stateEl?.closest?.('.el-form-item.is-required,.ant-form-item-required,[aria-required="true"]');
+      const formilyRow = stateEl?.closest?.('.ud-formily-item');
+      const formilyCaption = formilyRow && Array.from(formilyRow.querySelectorAll('.ud-formily-item-label')).find(node =>
+        node.closest('.ud-formily-item') === formilyRow);
+      if (formilyCaption && /[*＊]/.test(formilyCaption.textContent || '')) localRequired = true;
       if (stateEl?.matches?.('input,textarea,select')) {
         for (let node = stateEl.parentElement, depth = 0; node && depth < 4; node = node.parentElement, depth += 1) {
           if (node.querySelectorAll('input:not([type="hidden"]),textarea,select').length > 3) break;
@@ -1592,14 +1736,23 @@
       if (stateEl.required || stateEl.getAttribute('aria-required') === 'true' ||
           stateEl.closest('.my-list-item')?.querySelector('.header-title .icon-bitian') ||
           mokaRequired || localRequired) entry.required = true;
-      if (/(^|\.)zhiye\.com$/i.test(location.hostname) && stateEl) {
+      if (isBeisenFormPage() && stateEl) {
         const error=stateEl.closest('.form-item')?.querySelector('.form-item__error');
         if (error && isVisible(error) && tidyLabel(error.textContent || '')) {
           entry.validationError=tidyLabel(error.textContent || '').slice(0,100);
         }
       }
       if (opts.context) entry.context = opts.context;
+      if ((kind === 'date' && stateEl?.closest?.('.ud__picker')) ||
+          opts.context === 'popup' && stateEl?.closest?.('.ud__picker-dropdown')) {
+        entry.clickMode = 'trusted-pointer';
+      }
       if (opts.calendarDate) entry.calendarDate = opts.calendarDate;
+      if (kind==='custom-select' && stateEl?.closest?.('.phoenix-select') ||
+          opts.context==='popup' && activeLayer && transactionTrigger?.closest?.('.phoenix-select') &&
+          !stateEl.closest('.constant-main-selector-container,.area-selector-container')) {
+        entry.clickMode='trusted-pointer';
+      }
       if (opts.formRuleSignals && opts.formRuleSignals.length) entry.formRuleSignals = opts.formRuleSignals;
       if (opts.offscreen) entry.offscreen = true;
       if (opts.viaProxy) entry.viaProxy = true;
@@ -1631,11 +1784,17 @@
           });
         }
       }
-      if (stateEl && stateEl.checked !== undefined && (role === "checkbox" || role === "radio")) {
-        entry.checked = stateEl.checked;
+      if (stateEl && (role === "checkbox" || role === "radio")) {
+        entry.checked = stateEl.getAttribute('aria-checked') === 'true' || stateEl.checked === true;
+        if (role === 'radio') {
+          const group=stateEl.closest('[role="radiogroup"],.ud__radio-group,.phoenix-radio-group,.ud-formily-item,fieldset');
+          if (group) entry.choiceGroup=`radio-group-${Array.from(document.querySelectorAll(
+            '[role="radiogroup"],.ud__radio-group,.phoenix-radio-group,.ud-formily-item,fieldset')).indexOf(group)}`;
+        }
       }
       if (kind === 'custom-radio') {
-        entry.checked = stateEl.classList.contains('cur');
+        entry.checked = entry.checked === true || stateEl.classList.contains('cur') || stateEl.classList.contains('phoenix-radio--checked') ||
+          stateEl.getAttribute('aria-checked') === 'true';
         entry.optionValue = tidyLabel(stateEl.textContent || '');
       }
       if (stateEl?.matches('input[type="radio"]')) {
@@ -1651,6 +1810,7 @@
       }
       if (stateEl && stateEl.disabled === true) entry.disabled = true;
       if (opts.disabled) entry.disabled = true;
+      if (stateEl?.closest?.('.layui-layer-btn') && /^(确定|保存)$/.test(tidyLabel(stateEl.textContent))) entry.recordCommit = true;
 
       if (stateEl && role === "combobox" && stateEl.tagName === "SELECT") {
         entry.options = Array.from(stateEl.options).slice(0, 30).map((opt, i) => ({
@@ -1680,7 +1840,7 @@
         role === 'radio' && ownOption && ownOption.length <= 20 ? ownOption : deriveLabel(resolved.proxy);
       pushEntry(el, {
         role,
-        kind: "custom-checkbox",
+        kind: role === 'radio' ? 'custom-radio' : 'custom-checkbox',
         label,
         value: "",
         operations: disabled ? [] : ["CLICK"],
@@ -1727,7 +1887,7 @@
           const label = fileFieldLabel(el);
           pushEntry(el, {
             role: 'button', kind: 'file', targetEl: el, label, value: fileFieldValue(el),
-            operations: ['UPLOAD_FILE'], offscreen: false
+            operations: isOptionalResumeParser(el) ? [] : ['UPLOAD_FILE'], offscreen: false
           });
           return;
         }
@@ -1775,23 +1935,22 @@
           kind = 'combobox';
         }
         // 360/北森的年月控件与普通下拉共享 DOM 外形，字段标题才是稳定语义。
-        if (/(^|\.)zhiye\.com$/i.test(location.hostname) && kind === 'custom-select' &&
+        if (isBeisenFormPage() && kind === 'custom-select' &&
             DATE_HINT_RE.test(label)) kind = 'beisen-date';
-        const phoenixTarget = kind === 'custom-select' ? el.closest('.phoenix-select') : null;
         const disabled = el.disabled === true || el.getAttribute("aria-disabled") === "true";
         // 浮层里的选项无论走哪条采集路径，都要带上 popup 标记：
         // 它对 Jev 是"点了就消失，要立刻做决定"的信号。
-        const isPopupItem = !isFeishuNavigationLayer(el) && (["option", "menuitem", "radio", "checkbox", "textbox"].includes(role) ||
-          role === 'button' && (!!el.closest('.el-picker-panel') || !!activeLayer?.contains(el))) &&
+        const isPopupItem = !el.closest('.layui-layer-btn') && !isFeishuNavigationLayer(el) && ["option", "menuitem", "radio", "checkbox", "textbox", "button"].includes(role) &&
           (inPopupContainer(el) || !!activeLayer?.contains(el));
         pushEntry(el, {
           role,
           kind,
-          targetEl:phoenixTarget || (kind === 'section-entry' ? el.querySelector('.add-btn') || el : el),
+          targetEl:kind === 'section-entry' ? el.querySelector('.add-btn') || el : el,
           label,
           value: getValue(el, kind),
           // 禁用的控件不给出任何操作，避免 Jev 选到一个点不动的目标
-          operations: disabled ? [] : deriveOperations(role, el, kind),
+          operations: disabled ? [] : kind==='date' && el.closest('.ud__picker,.throne-biz-date-range-picker-input') ?
+            ['CLICK'] : deriveOperations(role, el, kind),
           context: isPopupItem ? "popup" : undefined,
           formRuleSignals: formRuleSignals(el),
           disabled: disabled || undefined,
@@ -1800,7 +1959,7 @@
       });
     });
 
-    // 卡片式可点容器：有些网申站（如荣耀的分段列表页）整页没有一个原生控件，
+    // 卡片式可点容器：部分分段列表页整页只有卡片入口，
     // 每个分段是一张可点的 div，只认原生控件会得到 0 个元素，Jev 无从下手。
     collectClickableCards(roots, seen, interactiveSelector, inView.length + offView.length === 0).forEach((el) => {
       if (activeLayer && !activeLayer.contains(el)) return;
@@ -1905,6 +2064,28 @@
     }
     annotateFieldGroups(allEntriesInDomOrder);
 
+    // 控件身份沿完整 DOM 顺序生成，滚动和浮层预算只改变展示顺序。
+    for (const {entry,stateEl,targetEl} of allEntriesInDomOrder) {
+      entry.documentId = documentId;
+      const editor=stateEl?.closest?.('[role="dialog"],.el-dialog,.ant-modal,[class*="drawer"]');
+      entry.surfaceId = nodeId(editor && isRecordEditorSurface(editor) ? editor : stateEl?.closest?.('form') || document.documentElement);
+      entry.nodeKey = nodeId(entry.kind === 'custom-select' ? stateEl?.closest?.('.phoenix-select') || stateEl || targetEl : stateEl || targetEl);
+      entry.stableKey = widgetDrivers.stableKey(entry,entry.nodeKey);
+      if (entry.context === 'popup' && transactionTrigger?.isConnected) entry.popupOwnerKey = nodeId(transactionTrigger);
+      let record = stateEl?.closest?.('[data-record-id],[data-record-key],.resumeContent,.record-item,.experience-item');
+      if (!record && /^(编辑|修改)$/.test(tidyLabel(entry.label))) {
+        for (let node=stateEl?.parentElement,depth=0;node && depth<7 && node!==document.body;node=node.parentElement,depth++) {
+          const commands=Array.from(node.querySelectorAll('button,a,[role="button"],.resume-btn')).filter(command=>
+            /^(编辑|修改)$/.test(tidyLabel(command.textContent || '')));
+          if(commands.length>1) break;
+          if(commands.length===1 && tidyLabel(node.textContent).length>10) {record=node;break;}
+        }
+      }
+      if (record) entry.recordStableKey = nodeId(record);
+      if (/编辑|修改/.test(entry.label || '') && record) entry.summaryText = tidyLabel(record.textContent).slice(0,12000);
+      if (stateEl?.maxLength > 0) entry.maxLength = stateEl.maxLength;
+    }
+
     // 视口内的排在前面，超量时优先保留视口内的字段
     const allEntries = [...inView, ...offView];
     const popupEntries = allEntries.filter(({ entry }) => entry.context === "popup");
@@ -1917,13 +2098,8 @@
     const ordered = popupEntries.length
       ? [...popupEntries.slice(0, popupBudget), ...normalEntries.slice(0, normalBudget)].slice(0, MAX_ELEMENTS)
       : allEntries.slice(0, MAX_ELEMENTS);
-    const stableOccurrences = new Map();
     const out = [];
     for (const { stateEl, targetEl, entry } of ordered) {
-      const stableBase = [entry.section, entry.context, entry.widgetFamily, entry.role, tidyLabel(entry.label)].filter(Boolean).join('|');
-      const occurrence = (stableOccurrences.get(stableBase) || 0) + 1;
-      stableOccurrences.set(stableBase, occurrence);
-      entry.stableKey = widgetDrivers.stableKey(entry, occurrence);
       entry.index = String(out.length + 1);
       if (entry.options) {
         entry.options = entry.options.map((opt, i) => ({ ...opt, index: `${entry.index}:${i + 1}` }));
@@ -2079,7 +2255,7 @@
   function safeScrollIntoView(el) {
     if (typeof el.scrollIntoView !== "function") return;
     try {
-      el.scrollIntoView({ block: "center", inline: "center" });
+      el.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
     } catch (_) {
       try {
         el.scrollIntoView();
@@ -2165,11 +2341,15 @@
       return {ok:false,reason:'当前控件不需要真实指针点击'};
     }
     safeScrollIntoView(el);
-    const clickTarget = isFeishuJobsPage()
+    const stateEl=elementStateRegistry[pos] || el;
+    const phoenixHost=meta.kind==='custom-select' && stateEl.closest?.('.phoenix-select');
+    if (meta.context !== 'popup') transactionTrigger=stateEl.closest?.('.phoenix-select') || stateEl;
+    const phoenixArrow=phoenixHost && Array.from(phoenixHost.querySelectorAll('.phoenix-select__switchArrow')).find(isVisible);
+    const clickTarget = phoenixArrow || (isFeishuJobsPage()
       ? feishuCardPointerTarget(el, meta.clickLabel || meta.label, meta.label)
       : isMokaFormPage() && meta.context === 'popup'
         ? mokaPopupOptionTarget(el, meta.label)
-      : el;
+      : el);
     safeScrollIntoView(clickTarget);
     const rect = clickTarget?.getBoundingClientRect?.();
     if (!rect.width || !rect.height || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) {
@@ -2407,6 +2587,8 @@
     const stateEl = elementStateRegistry[pos] || el;
     const meta = elementMetaRegistry[pos] || {};
     const wasChecked = stateEl.checked;
+    if (meta.context !== 'popup') transactionTrigger=stateEl.closest?.('.phoenix-select') || stateEl;
+    if (meta.kind === 'section-entry' || /^(编辑|修改|新增|添加|增加)/.test(tidyLabel(meta.label))) selectedSection=meta.section || tidyLabel(meta.label);
     if (el.disabled || el.getAttribute("aria-disabled") === "true") {
       return { ok: false, reason: `元素 ${index} 已禁用` };
     }
@@ -2521,14 +2703,20 @@
     // 本身允许程序化 click 的构建可以继续完成填写。
     const feishuHitTarget = isFeishuJobsPage() && meta.clickMode === 'trusted-pointer'
       ? feishuCardPointerTarget(el, meta.clickLabel || meta.label, meta.label) : null;
-    const clickTarget = mokaClearTarget || beisenChoiceTarget || leafTarget || feishuHitTarget || el;
+    const phoenixArrow = meta.kind === 'custom-select'
+      ? Array.from(stateEl?.closest?.('.phoenix-select')?.querySelectorAll('.phoenix-select__switchArrow') || [])
+        .find(isVisible) : null;
+    if (meta.context !== 'popup' && !activeLayer?.contains(stateEl)) transactionTrigger=stateEl.closest?.('.phoenix-select') || stateEl;
+    const clickTarget = mokaClearTarget || beisenChoiceTarget || phoenixArrow || leafTarget || feishuHitTarget || el;
     const r = clickTarget.getBoundingClientRect();
     if (!notOccluded(clickTarget, r)) {
       // 不强制失败，因为元素可能合法地被父级覆盖；记录但继续
       console.warn(`${TAG} click 目标可能被遮挡`, index);
     }
     if (!mokaClearTarget) safeScrollIntoView(clickTarget);
-    if (!mokaClearTarget && typeof clickTarget.focus === "function") {
+    const singleActivation = (stateEl?.closest?.('.phoenix-select') &&
+      meta.kind === 'custom-select') || stateEl?.closest?.('.ud__picker');
+    if (!mokaClearTarget && !singleActivation && typeof clickTarget.focus === "function") {
       let focusDelivered = false;
       const observeFocus = () => { focusDelivered = true; };
       clickTarget.addEventListener('focus', observeFocus, {once:true});
@@ -2560,7 +2748,7 @@
     // 保持单击，避免把选择层刚打开又关闭。
     const feishuSingleClick = isFeishuJobsPage();
     if (!mokaClearTarget && !beisenChoiceTarget &&
-        !feishuSingleClick && !clickTarget.matches?.('.phoenix-select input')) {
+        !feishuSingleClick && !singleActivation && !clickTarget.matches?.('.phoenix-select input')) {
       try {
         clickTarget.dispatchEvent(new PointerEvent("pointerdown", opts));
         clickTarget.dispatchEvent(new MouseEvent("mousedown", opts));
@@ -2883,6 +3071,7 @@
     const targetDay = rawDay ? Number(rawDay) : 1;
     const expectedPrefix = `${rawYear}-${String(targetMonth).padStart(2, '0')}`;
     const panel = () => {
+      visibilityCache = new Map();
       // 北森当前页面的日历没有 Element UI 类名，但可见面板始终同时含有
       // “YYYY年”按钮、“M月”按钮与日期表格。先用这三个结构特征锁定最小公共容器。
       const visibleTables = Array.from(document.querySelectorAll('table')).filter(isVisible);
@@ -2927,6 +3116,7 @@
     if (!picker) return {ok:false,reason:'北森日期面板未打开'};
     const readMonth = () => {
       const labels = Array.from(picker.querySelectorAll('.el-date-picker__header-label,button,span'))
+        .filter(isVisible)
         .map(node => tidyLabel(node.innerText || node.textContent || ''));
       let year = labels.map(text => text.match(/(\d{4})/)).find(Boolean)?.[1];
       let month = labels.map(text => text.match(/^(\d{1,2})(?:\s*月)?$/)).find(Boolean)?.[1];
@@ -2969,6 +3159,37 @@
           button.innerText, button.textContent
         ].filter(Boolean).join(' ')));
     };
+    const monthNames=['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+    const semanticMonthCells=()=>Array.from(picker.querySelectorAll('table td')).filter(cell=>
+      isVisible(cell) && monthNames.includes(tidyLabel(cell.textContent || '')));
+    if (semanticMonthCells().length>=10) {
+      for (let tries=0; tries<120 && readMonth().year!==targetYear; tries++) {
+        const cells=semanticMonthCells();
+        let yearSurface=cells[0]?.parentElement;
+        while (yearSurface && !Array.from(yearSurface.querySelectorAll('button')).some(button=>
+          isVisible(button) && /^\d{4}(?:年)?$/.test(tidyLabel(button.textContent || '')))) yearSurface=yearSurface.parentElement;
+        const buttons=Array.from(yearSurface?.querySelectorAll('button') || []).filter(isVisible);
+        const arrows=buttons.filter(button=>!/^\d{4}(?:年)?$/.test(tidyLabel(button.textContent || '')));
+        const direction=targetYear<readMonth().year ? -1 : 1;
+        const nav=arrows.length===2 ? arrows[direction<0 ? 0 : 1] : navigation(direction);
+        if (!nav) return {ok:false,reason:'年月面板的年份导航不可用'};
+        nav.click();
+        await sleep(25);
+        picker=panel();
+        if (!picker) return {ok:false,reason:'年月面板在年份导航时关闭'};
+      }
+      if (readMonth().year!==targetYear) return {ok:false,reason:'年月面板未到达目标年份'};
+      const cell=semanticMonthCells().find(node=>monthNames.indexOf(tidyLabel(node.textContent || ''))+1===targetMonth);
+      if (!cell) return {ok:false,reason:'目标月份不可选'};
+      cell.click();
+      await sleep(80);
+      const actual=String(getValue(el,'beisen-date') || '').trim();
+      if (actual!==expectedPrefix) return {ok:false,reason:`年月回读不一致：${actual || '空白'}`,expected:expectedPrefix};
+      observedMonthControls.add(el);
+      const monthInput=el.matches?.('input') ? el : el.querySelector?.('input');
+      if (monthInput) observedMonthControls.add(monthInput);
+      return {ok:true,action:'pick_date',index,value:actual,verified:true,precision:'month'};
+    }
     for (let tries = 0; tries < 180; tries += 1) {
       const current = readMonth();
       if (current.year === targetYear && current.month === targetMonth) break;
@@ -2997,7 +3218,7 @@
     if (!dateCell) return {ok:false,reason:monthCells.length ? '北森月份网格无法定位目标月' : '北森日期网格无法定位目标日',expected:expectedPrefix};
     dateCell.click();
     await sleep(80);
-    const actual = String(el.value || '').trim();
+    const actual = String(getValue(el, 'beisen-date') || '').trim();
     return actual.startsWith(expectedPrefix) ? {ok:true,action:'pick_date',index,value:actual,verified:true} :
       {ok:false,reason:`北森日期回读不一致：${actual || '空白'}`,expected:expectedPrefix};
   }
@@ -3005,7 +3226,7 @@
   async function executeDatePicker(index, value) {
     const el = elementRegistry[parseInt(index, 10) - 1];
     if (!el || !el.matches('input')) return {ok:false,reason:'日期控件已变化'};
-    if (/(^|\.)zhiye\.com$/i.test(location.hostname) &&
+    if (isBeisenFormPage() &&
         (el.closest('.el-date-editor') || DATE_HINT_RE.test(deriveLabel(el)) ||
           DATE_HINT_RE.test(tidyLabel(el.closest('.form-item,.el-form-item,[class*="form-item"]')?.innerText || '')))) {
       return executeBeisenDate(el,index,value);
@@ -3195,7 +3416,8 @@
     const ym = v.match(/^(\d{4})-(\d{1,2})$/);
     const ymd = v.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
 
-    if (type === "month") {
+    if (type === "month" || el.closest('.ud__picker') && el.getAttribute('placeholder') === 'YYYY-MM') {
+      if (ymd) return { value: `${ymd[1]}-${ymd[2].padStart(2, "0")}`, note: "按控件精度填写年月" };
       if (ym) return { value: `${ym[1]}-${ym[2].padStart(2, "0")}`, note: "" };
       if (/^\d{4}$/.test(v)) return { error: "日期缺少月份，保留空白等待补充" };
       return { value, note: "" };
@@ -3260,11 +3482,8 @@
     const el = elementRegistry[parseInt(index, 10) - 1];
     if (!el || !el.matches?.('input[type="file"]')) return { ok:false, reason:`元素 ${index} 不是文件输入框` };
     if (!fileData?.dataUrl || !fileData?.name) return { ok:false, dataGap:true, reason:'插件中尚未选择文件' };
-    const previousPhotoSrc = el.parentElement?.querySelector('.uploader-img img[src]')?.src || '';
-    const photoUploaded = () => location.hostname === 'xiaoyuan.zhaopin.com' &&
-      /\.(?:jpe?g|png|gif|webp)$/i.test(fileData.name) &&
-      !!el.parentElement?.querySelector('.uploader-img img[src]')?.src &&
-      el.parentElement.querySelector('.uploader-img img[src]').src !== previousPhotoSrc;
+    const fileLabel = fileFieldLabel(el);
+    const previousImages = new Set(Array.from(fileUploadArea(el)?.querySelectorAll('img[src]') || [], image => image.src));
     const response = await fetch(fileData.dataUrl);
     const blob = await response.blob();
     const file = new File([blob], fileData.name, { type:fileData.type || blob.type || 'application/octet-stream' });
@@ -3273,66 +3492,46 @@
     el.files = transfer.files;
     el.dispatchEvent(new Event('input', { bubbles:true }));
     el.dispatchEvent(new Event('change', { bubbles:true }));
-    await sleep(400);
-    const actual = el.files?.[0]?.name || '';
-    if (actual !== fileData.name) {
-      // 招聘站点上传成功后常重置原生 file input；改读网站生成的文件名回执。
-      for (let attempt=0; attempt<8; attempt++) {
-        if (photoUploaded()) return {ok:true,action:'upload_file',index,value:fileData.name,
-          verified:true,receipt:'photo-preview'};
-        const pageText = String(document.body?.innerText || document.body?.textContent || '');
-        if (pageText.includes(fileData.name) && !/上传中|uploading/i.test(pageText.slice(
-          Math.max(0,pageText.indexOf(fileData.name)-30),pageText.indexOf(fileData.name)+fileData.name.length+30))) {
-          return {ok:true,action:'upload_file',index,value:fileData.name,verified:true,receipt:'page-filename'};
-        }
-        await sleep(500);
+    // 上传期间由本事务持有执行权；网站回执出现后再交回调度器。
+    for (let elapsed=0; elapsed<60000; elapsed+=500) {
+      await sleep(500);
+      const input = el.isConnected ? el : Array.from(document.querySelectorAll('input[type="file"]'))
+        .find(node => fileFieldLabel(node) === fileLabel);
+      if (!input) continue;
+      if (fileUploadPending(input)) continue;
+      const area = fileUploadArea(input);
+      const status = String(area?.textContent || '');
+      if (/上传失败|上传出错|upload failed|文件过大|超过.{0,8}(?:限制|大小)/i.test(status)) {
+        return {ok:false,reason:'网站报告附件上传失败，请核对文件限制或网站服务状态'};
       }
-      return {ok:false,reason:'文件选择和网站文件名均未回读成功'};
+      const receipt = fileFieldValue(input);
+      if (receipt === fileData.name) return {ok:true,action:'upload_file',index,value:fileData.name,
+        verified:true,receipt:status.includes(fileData.name) ? 'website-filename' : 'native-file'};
+      const photo = /\.(?:jpe?g|png|gif|webp)$/i.test(fileData.name) &&
+        Array.from(area?.querySelectorAll('img[src]') || []).some(image => !previousImages.has(image.src));
+      if (photo) return {ok:true,action:'upload_file',index,value:fileData.name,verified:true,receipt:'photo-preview'};
     }
-    const isMokaResume = isMokaFormPage() && /\.(?:pdf|docx?|pptx?|wps|txt)$/i.test(fileData.name);
-    if (isMokaResume) {
-      const fileLabel = fileFieldLabel(el);
-      const uploadArea = el.closest('[class*="upload"],[class*="Upload"]') || el.parentElement;
-      const visualArea = uploadArea?.parentElement?.parentElement || uploadArea;
-      const statusText = () => String(visualArea?.textContent || '');
-      const uploadedFileVisible = () => Array.from(document.querySelectorAll('input[type="file"]'))
-        .some(input => {
-          if (fileFieldLabel(input) !== fileLabel) return false;
-          let node = input.parentElement;
-          for (let depth=0; node && depth<6; depth+=1, node=node.parentElement) {
-            if (node.querySelectorAll('input[type="file"]').length > 1) break;
-            const text = String(node.innerText || node.textContent || '');
-            if (text.includes(fileData.name) && !/上传中|uploading/i.test(text)) return true;
-          }
-          return false;
-        });
-      let sawUploadProgress = false;
-      for (let elapsed=0; elapsed<90000; elapsed+=1000) {
-        if (uploadedFileVisible()) return {ok:true,action:'upload_file',index,value:fileData.name,verified:true};
-        const status = statusText();
-        if (/上传中|uploading/i.test(status)) sawUploadProgress = true;
-        if (sawUploadProgress && !/上传中|uploading/i.test(status)) {
-          await sleep(1500);
-          if (uploadedFileVisible()) {
-            return {ok:true,action:'upload_file',index,value:fileData.name,verified:true};
-          }
-          return {ok:false,reason:'网站处理上传后未保留简历附件；请核对附件格式或网站服务状态'};
-        }
-        await sleep(1000);
-      }
-      return uploadedFileVisible() ? {ok:true,action:'upload_file',index,value:fileData.name,verified:true} :
-        {ok:false,reason:'网站处理上传后未显示简历文件名；请核对附件格式或网站服务状态'};
-    }
-    return {ok:true,action:'upload_file',index,value:actual,verified:true};
+    return {ok:false,reason:'上传事务超时：网站尚未显示附件文件名或照片回执'};
   }
 
-  function closeResumeTransactions() {
+  async function closeResumeTransactions() {
+    visibilityCache = new Map();
     const layer = focusedEditorLayer();
-    const close = layer && Array.from(layer.querySelectorAll('button,[role="button"]')).find(el =>
+    if (layer && transactionTrigger?.isConnected) {
+      const arrow=Array.from(transactionTrigger.closest('.phoenix-select')?.querySelectorAll('.phoenix-select__switchArrow') || [])
+        .find(isVisible);
+      if (arrow) {
+        arrow.click();
+        await sleep(80);
+        visibilityCache = new Map();
+        if (!focusedEditorLayer()) { transactionTrigger=null; return {ok:true}; }
+      }
+    }
+    const close = layer && Array.from(layer.querySelectorAll('button,[role="button"],a,div,span')).find(el =>
       isVisible(el) && (el.matches('.el-dialog__headerbtn') || /^(close|关闭|取消)$/i.test(tidyLabel(el.getAttribute('aria-label') || el.textContent || ''))));
-    if (close) { close.click(); return; }
-    if (platformDrivers.closeTransactions(document, location.hostname)) return;
-    if (widgetDrivers.closeOpenTransactions) widgetDrivers.closeOpenTransactions(document);
+    if (close) close.click();
+    else if (platformDrivers.closeTransactions(document, location.hostname)) { /* 平台已处理关闭事件 */ }
+    else if (widgetDrivers.closeOpenTransactions) widgetDrivers.closeOpenTransactions(document);
     else {
       const escape = new KeyboardEvent('keydown', { bubbles:true, cancelable:true, key:'Escape', code:'Escape', keyCode:27, which:27 });
       (document.activeElement || document).dispatchEvent(escape);
@@ -3340,6 +3539,14 @@
       document.activeElement?.blur?.();
       document.body?.dispatchEvent(new MouseEvent('click', { bubbles:true, cancelable:true, clientX:1, clientY:1 }));
     }
+    await sleep(80);
+    visibilityCache = new Map();
+    const remaining=focusedEditorLayer();
+    const retryTarget=close || transactionTrigger?.closest?.('.form-item')?.querySelector('.form-item__label') ||
+      transactionTrigger?.closest?.('.phoenix-select')?.querySelector('.phoenix-select__switchArrow');
+    const box=remaining && retryTarget?.getBoundingClientRect();
+    return {ok:!remaining,reason:remaining ? '选择器仍展开，关闭事务尚未回读' : undefined,
+      retryPoint:box?.width && box?.height ? {x:box.left+box.width/2,y:box.top+box.height/2} : undefined};
   }
 
   // 页面结构体检：一个控件都采不到时，靠它看清"页面上到底有什么、哪些看着像能点"。
@@ -3434,12 +3641,21 @@
         .filter(isVisible).slice(0,120).map(el => ({
           tag:el.tagName, type:el.getAttribute('type'), placeholder:el.getAttribute('placeholder'),
           derivedLabel:deriveLabel(el),
-          ancestors:Array.from((function* () { for (let node=el.parentElement,i=0; node && i<4; node=node.parentElement,i++) yield node; })())
+          ancestors:Array.from((function* () { for (let node=el.parentElement,i=0; node && node!==document.body && i<10; node=node.parentElement,i++) yield node; })())
             .map(node => ({cls:String(node.className || '').slice(0,80),
               controlCount:node.querySelectorAll('input,textarea,select').length,
               captions:Array.from(node.children).filter(child => !child.contains(el) &&
                 !child.querySelector('input,textarea,select')).map(child => tidyLabel(child.textContent || ''))
                 .filter(value => value.length > 0 && value.length < 36).slice(0,4)}))
+        })),
+      controlStructure: Array.from(document.querySelectorAll('.ud__select,.ud__picker,.phoenix-radio,.phoenix-select'))
+        .filter(isVisible).slice(0,80).map(el=>({
+          label:deriveLabel(el.querySelector('input') || el),
+          children:[el,...el.querySelectorAll('*')].slice(0,45).map(node=>({
+            tag:node.tagName,cls:String(node.className || ''),role:node.getAttribute('role'),
+            placeholder:node.getAttribute('placeholder'),type:node.getAttribute('type'),
+            checked:node.getAttribute('aria-checked')
+          }))
         })),
       fieldStructure: Array.from(document.querySelectorAll('.my-list-item')).map(row => ({
         label: row.querySelector('.header-title')?.textContent?.trim(),
@@ -3499,81 +3715,6 @@
     };
   }
 
-  const ITER_SECTIONS = ['个人信息','求职意向','教育经历','社会实习经历','项目经验','校内实践经历','奖励','技能特长','自我评价'];
-  let iterLastNavigatedSection='';
-
-  function iterState() {
-    if (location.hostname !== 'iter.stongyw.cn' || location.pathname !== '/web/school/resume/index.html') return null;
-    visibilityCache = new Map();
-    const cards = Array.from(document.querySelectorAll('.resumeContent')).filter(el=>{
-      const rect=el.getBoundingClientRect();
-      return isVisible(el) && rect.width>0 && rect.height>0;
-    });
-    const activeLink=Array.from(document.querySelectorAll('a[href="javascript:;"]')).find(el=>
-      isVisible(el) && (el.classList.contains('cur') || el.parentElement?.classList.contains('cur') || el.closest('li')?.classList.contains('cur')) &&
-      ITER_SECTIONS.some(name=>tidyLabel(el.textContent).includes(name)));
-    const current = cards.map(card=>ITER_SECTIONS.find(name=>tidyLabel(card.textContent).includes(name))).find(Boolean) ||
-      ITER_SECTIONS.find(name=>tidyLabel(activeLink?.textContent || '').includes(name)) || iterLastNavigatedSection;
-    const sections = Array.from(document.querySelectorAll('a[href="javascript:;"]'))
-      .filter(el=>isVisible(el) && el.getBoundingClientRect().width>0)
-      .map(el=>ITER_SECTIONS.find(name=>tidyLabel(el.textContent).includes(name))).filter(Boolean);
-    const editorOpen = Array.from(document.querySelectorAll('iframe[src*="/web/school/resume/"]')).some(el=>isVisible(el));
-    const editorButtons=Array.from(document.querySelectorAll('.resume-btn')).filter(el=>{
-      const rect=el.getBoundingClientRect();
-      return isVisible(el) && rect.width>0 && rect.height>0 && /(编辑|添加)/.test(el.textContent);
-    });
-    return {current,sections:[...new Set(sections)],editorOpen,editorCount:editorButtons.length,
-      overviewText:cards.map(card=>String(card.textContent || '').replace(/\s+/g,' ').trim()).join(' ').slice(0,12000)};
-  }
-
-  function iterNavigate(section) {
-    const state=iterState();
-    if (!state || state.editorOpen || !ITER_SECTIONS.includes(section)) return {ok:false,reason:'分区导航不可用'};
-    const link=Array.from(document.querySelectorAll('a[href="javascript:;"]'))
-      .find(el=>isVisible(el) && tidyLabel(el.textContent).includes(section));
-    if (!link) return {ok:false,reason:`没有找到「${section}」入口`};
-    link.click();
-    iterLastNavigatedSection=section;
-    return {ok:true,section};
-  }
-
-  function iterOpenEditor(editorIndex=0) {
-    const state=iterState();
-    if (!state || state.editorOpen) return {ok:false,reason:'当前无法打开编辑弹窗'};
-    visibilityCache = new Map();
-    const buttons=Array.from(document.querySelectorAll('.resume-btn')).filter(el=>{
-      const r=el.getBoundingClientRect();
-      return isVisible(el) && r.width>0 && r.height>0 && /(编辑|添加)/.test(el.textContent);
-    });
-    if (!buttons[editorIndex]) return {ok:false,reason:`当前分区没有第 ${editorIndex+1} 个编辑入口`};
-    buttons[editorIndex].click();
-    return {ok:true,section:state.current};
-  }
-
-  function iterClickDialogButton(label) {
-    if (!iterState()) return {ok:false,reason:'当前不是受支持的简历总览'};
-    visibilityCache = new Map();
-    const buttons=Array.from(document.querySelectorAll('.layui-layer-btn a')).filter(el=>{
-      const r=el.getBoundingClientRect();
-      return isVisible(el) && r.width>0 && r.height>0 && tidyLabel(el.textContent)===label;
-    });
-    if (!buttons.length) return {ok:false,reason:`没有找到弹窗「${label}」按钮`};
-    if (label === '确定') {
-      for (const frame of document.querySelectorAll('iframe[src*="/web/school/resume/"]')) {
-        try {
-          const focused=frame.contentDocument?.activeElement;
-          if (focused?.matches('input,textarea')) {
-            focused.blur();
-            focused.dispatchEvent(new Event('change',{bubbles:true}));
-          }
-        } catch (_) {}
-      }
-    }
-    const button=buttons[buttons.length-1];
-    button.focus();
-    button.click();
-    return {ok:true};
-  }
 
   // === 执行 select ===
   async function executeSelect(target) {
@@ -3656,9 +3797,12 @@
             },
             page: {
               url: location.href,
+              documentId,
               title: document.title,
               activeSection: activeSectionTitle(),
               editorSurface: hasEditorSurface(),
+              editorSurfaceId: recordEditorSurface() ? nodeId(recordEditorSurface()) : '',
+              editorFrameUrls: Array.from(document.querySelectorAll('iframe')).filter(isVisible).map(el=>el.src),
               platform: platformDrivers.platformId(location.hostname, document) || (isMokaFormPage() ? 'moka-form' : ''),
               text: getPageText(),
               authRequired: /尚未登录|登录时间过长|登录已过期|登录失效|请重新登录|扫码登录/.test(
@@ -3672,32 +3816,37 @@
         }
 
         case "CLOSE_TRANSACTIONS": {
-          closeResumeTransactions();
-          sendResponse({ok:true});
+          closeResumeTransactions().then(sendResponse);
+          return true;
+        }
+        case "TRANSACTION_STATE": {
+          visibilityCache = new Map();
+          sendResponse({ok:true,open:!!focusedEditorLayer()});
+          return true;
+        }
+        case "TRANSACTION_OUTSIDE_POINT": {
+          const anchor=transactionTrigger?.getBoundingClientRect();
+          const y=Math.min(window.innerHeight-140,Math.max(140,(anchor?.top || 140)+120));
+          const choices=[[8,y],[window.innerWidth-8,y],
+            [Math.max(8,(anchor?.left || 80)-80),Math.min(window.innerHeight-140,y+140)]];
+          const point=choices.find(([x,py])=>{
+            const hit=document.elementFromPoint?.(x,py);
+            return hit && !hit.closest('button,a,input,select,textarea,label,[role="button"]') &&
+              !hit.closest('.phoenix-selectList,[role="dialog"],.ant-modal,.el-dialog');
+          });
+          sendResponse(point ? {ok:true,point:{x:point[0],y:point[1]}} :
+            {ok:false,reason:'页面当前没有安全的选择器外点击位置'});
+          return true;
+        }
+        case "TRANSACTION_EXIT_POINT": {
+          const target=Array.from(transactionTrigger?.closest?.('.phoenix-select')?.querySelectorAll('.phoenix-select__switchArrow') || [])
+            .find(isVisible) || transactionTrigger?.closest?.('.form-item')?.querySelector('.form-item__label');
+          const box=target?.getBoundingClientRect();
+          sendResponse(box?.width && box?.height ? {ok:true,point:{x:box.left+box.width/2,y:box.top+box.height/2}} :
+            {ok:false,reason:'当前选择器没有可定位的退出区域'});
           return true;
         }
 
-        case "MATCH_RECORD": {
-          const identities = (Array.isArray(msg.identities) ? msg.identities : [])
-            .map(value => String(value || '').trim()).filter(value => value.length >= 2);
-          let section = '';
-          const matches = Array.from(document.querySelectorAll('.set-wrap,.resumer-item-list-item'))
-            .filter(row => {
-              if (row.matches('.set-wrap')) {
-                section = tidyLabel(row.querySelector('.txt-title')?.textContent || '');
-                return false;
-              }
-              return section === msg.section && isVisible(row) &&
-                identities.some(identity => row.textContent.includes(identity));
-            });
-          if (msg.click && matches.length === 1) {
-            safeScrollIntoView(matches[0]);
-            matches[0].click();
-          }
-          sendResponse({ok:true, found:matches.length === 1, count:matches.length,
-            clicked:!!msg.click && matches.length === 1});
-          return true;
-        }
 
         case "MARK_TARGET": {
           const el = elementRegistry[parseInt(msg.index, 10) - 1];
@@ -3770,35 +3919,16 @@
           sendResponse({ ok: true, structure: dumpStructure() });
           return true;
 
-        case "ITER_STATE":
-          sendResponse({ok:true,state:iterState()});
-          return true;
-        case "ITER_NAVIGATE":
-          sendResponse(iterNavigate(msg.section));
-          return true;
-        case "ITER_OPEN_EDITOR":
-          sendResponse(iterOpenEditor(msg.editorIndex || 0));
-          return true;
-        case "ITER_DIALOG_BUTTON":
-          sendResponse(iterClickDialogButton(msg.label));
-          return true;
-
         default:
-          // 不认识的消息交给其他监听者处理，避免抢答 Popup 发给 SW 的消息
           return false;
       }
     } catch (err) {
-      sendResponse({ ok: false, reason: err.message });
+      sendResponse({ok:false,reason:err.message});
       return true;
     }
   });
 
-  // 上报 SW 自己已加载
   try {
-    chrome.runtime.sendMessage({ type: "CONTENT_LOADED", url: location.href }, () => {
-      if (chrome.runtime.lastError) {
-        // 扩展刚加载属正常
-      }
-    });
+    chrome.runtime.sendMessage({type:'CONTENT_LOADED',url:location.href},()=>{ void chrome.runtime.lastError; });
   } catch (_) {}
 })();

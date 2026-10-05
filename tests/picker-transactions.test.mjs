@@ -186,7 +186,7 @@ assert.ok(mokaTemporarilyClosedPlan.actions.some(action=>action.resumeField==='e
 assert.ok(!mokaTemporarilyClosedPlan.actions.some(action=>action.resumeField==='basics.email'));
 const mokaRecruitmentSource=buildActionPlan([
   option('official','官方公众号'), option('school','高校就业网'), option('other-source','其他')
-],{basics:{}},[{kind:'click',formRule:'recruitment-source'}],
+],{application:{recruitmentSource:'校园招聘官网'}},[{kind:'click',resumeField:'application.recruitmentSource'}],
 {url:'https://app-tc.mokahr.com/campus-recruitment/example'});
 assert.ok(mokaRecruitmentSource.actions.some(a=>a.target==='other-source'));
 assert.ok(mokaRecruitmentSource.actions.some(a=>a.target==='official' && a.semanticFallback && a.semanticValue==='校园招聘官网'));

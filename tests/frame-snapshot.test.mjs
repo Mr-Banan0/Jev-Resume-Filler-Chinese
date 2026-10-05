@@ -7,7 +7,7 @@ const FRAME_DATA = {
     ok: true,
     count: 1,
     elements: [{ index: '1', role: 'button', label: '下一步', value: '', operations: ['CLICK'] }],
-    page: { url: 'https://career.honor.com/...', title: '创建简历', text: '个人基本信息 填写进度 1/13' }
+    page: { url: 'https://example.test/resume', title: '创建简历', text: '个人基本信息 填写进度 1/13' }
   },
   7: {
     ok: true,
@@ -43,7 +43,7 @@ globalThis.chrome = {
     lastError: null
   },
   tabs: {
-    query: async () => [{ id: 1, url: 'https://career.honor.com/x' }],
+    query: async () => [{ id: 1, url: 'https://example.test/resume' }],
     sendMessage: (tabId, msg, opts, cb) => {
       if (typeof opts === 'function') { cb = opts; opts = {}; }
       const frameId = (opts && opts.frameId) || 0;

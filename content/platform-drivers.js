@@ -21,10 +21,10 @@
       /^(?:开始|入职)时间$/, /^(?:公司|公司名称|单位|单位名称|企业名称)$/
     ],
     项目经历: [
-      /^项目?开始时间$/, /^(?:项目名称|项目描述)$/
+      /^(?:项目)?开始时间$/, /^项目名称$/, /^项目描述$/
     ],
     项目经验: [
-      /^项目?开始时间$/, /^(?:项目名称|项目描述)$/
+      /^(?:项目)?开始时间$/, /^项目名称$/, /^项目描述$/
     ],
     语言能力: [
       /^(?:语言类型|语种|语言)$/
@@ -169,7 +169,9 @@
     for (const { entry, stateEl } of items) {
       if (sectionAliases[entry.section]) entry.section = sectionAliases[entry.section];
       const label = clean(entry.label || entry.placeholder);
-      const title = nearestFeishuFieldTitle(stateEl);
+      // Structured Formily captions and range slots are resolved by the shared
+      // observer; this adapter preserves that field identity through selection.
+      const title = stateEl?.closest?.('.ud-formily-item') ? entry.label : nearestFeishuFieldTitle(stateEl);
       const wasCard = entry.kind === 'card';
       // 飞书的可见交互层常是一个无 ARIA 语义的卡片，实际页面依赖完整的
       // 浏览器层面的真实指针点击来打开下拉或新增一条记录。把执行方式保留在
@@ -236,7 +238,8 @@
     id: 'beisen',
     matches(hostname, doc) {
       return /(^|\.)zhiye\.com$/i.test(hostname) ||
-        (!!doc?.querySelector?.('.constant-main-selector-container') && !!doc?.querySelector?.('.phoenix-select'));
+        (!!doc?.querySelector?.('.form-item--phoenix,.constant-main-selector-container') &&
+          !!doc?.querySelector?.('.phoenix-select,.phoenix-radio'));
     },
     annotateRecords(items) {
       normalizeBeisenSections(items);

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { buildActionPlan, buildSectionPlan, classifyRecordAddition, countRenderedRecords, isRecordSaveControl } from '../lib/jev-client.js';
 
+import {recordLedgerKey} from '../lib/traversal-state.js';
+
 const control = (index, section, label, kind = 'input') => ({
   index, section, label, kind, domOrder:Number(index.replace(/\D/g, '')),
   operations:kind === 'action' ? ['CLICK'] : ['TYPE_TEXT']
@@ -131,7 +133,7 @@ for (const [ordinal,field] of beisenFields.entries()) {
 }
 const pendingEditor=buildSectionPlan(elements,resume,{'教育背景|*':{editorPending:true}});
 assert.ok(!pendingEditor.actions.some(a=>a.operation==='ADD_RECORD'),'新编辑器等待填写期间保持单条事务');
-assert.equal(plan.actions.find(a=>a.section==='教育背景' && a.operation==='WORK_SECTION').ledgerKey,'教育背景|1');
+assert.equal(plan.actions.find(a=>a.section==='教育背景' && a.operation==='WORK_SECTION').ledgerKey,recordLedgerKey('教育背景','education',resume,0));
 
 assert.ok(plan.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'), '先填写当前已打开记录');
 assert.ok(!plan.actions.some(a => a.operation === 'ADD_RECORD' && a.section === '教育背景'));
@@ -153,16 +155,16 @@ assert.ok(!wrongFamilyIdentity.actions.some(a=>a.target==='32'),'已有姓名不
 assert.ok(wrongFamilyIdentity.summary.unresolved.some(item=>item.target==='32' && /不同/.test(item.reason)),
   '第二位家庭成员误填成父亲时应报告身份冲突');
 
-const completed = buildSectionPlan(elements.map(el=>el.index==='3'?{...el,value:'示例大学 A'}:el),resume,{'教育背景|1':{completed:true,status:'已回读'}});
+const completed = buildSectionPlan(elements.map(el=>el.index==='3'?{...el,value:'示例大学 A'}:el),resume,{'教育背景|*':{activeBlock:'education'},[recordLedgerKey('教育背景','education',resume,0)]:{completed:true,status:'已回读'}});
 assert.ok(!completed.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'));
 assert.ok(completed.actions.some(a => a.operation === 'ADD_RECORD' && a.section === '教育背景'));
 
-const blocked = buildSectionPlan(elements,resume,{'教育背景|1':{workBlocked:true,status:'待处理'}});
+const blocked = buildSectionPlan(elements,resume,{'教育背景|*':{activeBlock:'education'},[recordLedgerKey('教育背景','education',resume,0)]:{workBlocked:true,status:'待处理'}});
 assert.ok(!blocked.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'));
 assert.ok(!blocked.actions.some(a => a.operation === 'ADD_RECORD' && a.section === '教育背景'),
   '内联表单存在待补字段时保持当前记录，避免新增空白重复记录');
 
-const retriedThreeTimes = buildSectionPlan(elements,resume,{'教育背景|1':{workAttempts:3,status:'待处理'}});
+const retriedThreeTimes = buildSectionPlan(elements,resume,{'教育背景|*':{activeBlock:'education'},[recordLedgerKey('教育背景','education',resume,0)]:{workAttempts:3,status:'待处理'}});
 assert.ok(!retriedThreeTimes.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'));
 const importedUnknownAward = buildSectionPlan([
   {...control('114','获奖情况','获奖项'),value:'网站导入的历史奖项'},
@@ -175,7 +177,7 @@ const globallyBlocked = buildSectionPlan(elements,resume,{'教育背景|*':{work
 assert.ok(!globallyBlocked.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'),
   '同一分区无动作时跨记录计数变化也不能重复执行');
 
-const addBlocked = buildSectionPlan(elements,resume,{'教育背景|1':{addBlocked:true,status:'新增失败'}});
+const addBlocked = buildSectionPlan(elements,resume,{'教育背景|*':{activeBlock:'education'},[recordLedgerKey('教育背景','education',resume,0)]:{addBlocked:true,status:'新增失败'}});
 assert.ok(!addBlocked.actions.some(a => a.operation === 'ADD_RECORD' && a.section === '教育背景'));
 assert.ok(addBlocked.actions.some(a => a.operation === 'WORK_SECTION' && a.section === '教育背景'), '新增被网站阻止时仍填写已有记录');
 
@@ -199,13 +201,13 @@ const spacedSaveEditor=buildSectionPlan([
   control('81','个人信息','邮箱'),
   {...control('82','个人信息','保 存','action'),operations:['CLICK']},
   {...control('83','教育经历','教育经历 未完成','section-entry'),operations:['CLICK']}
-],resume,{'个人信息|0':{workBlocked:true}}, {activeSection:'个人信息'});
+],resume,{[recordLedgerKey('个人信息','basics',resume,0)]:{workBlocked:true}}, {activeSection:'个人信息'});
 assert.ok(!spacedSaveEditor.actions.some(a=>a.section==='教育经历'),
   '有未保存编辑器时停止跨分区导航');
 const nextRecord=buildSectionPlan([
   {...control('65','教育经历','教育经历 未完成','section-entry'),operations:['CLICK']},
   {...control('66','教育经历','添加','card'),operations:['CLICK']}
-],resume,{'教育经历|*':{savedCount:1}}, {activeSection:'教育经历'});
+],resume,{'教育经历|*':{activeBlock:'education'},[recordLedgerKey('教育经历','education',resume,0)]:{completed:true}}, {activeSection:'教育经历'});
 assert.ok(nextRecord.actions.some(a=>a.operation==='ADD_RECORD' && a.section==='教育经历' && a.recordIndex===1),
   '首条保存并回读后应打开下一条记录');
 const saveEditor=buildActionPlan([
@@ -332,26 +334,40 @@ assert.deepEqual(awardPlan.actions.map(a => a.resumeField), [
 
 const savedPersonalPlan=buildSectionPlan([
   {index:'edit',section:'个人信息',label:'编辑',kind:'button',operations:['CLICK']}
-],{basics:{name:'测试'}},{'个人信息|0':{completed:true}},{activeSection:'个人信息'});
+],{basics:{name:'测试'}},{[recordLedgerKey('个人信息','basics',{basics:{name:'测试'}},0)]:{completed:true}},{activeSection:'个人信息'});
 assert.ok(!savedPersonalPlan.actions.some(a=>a.operation==='FOCUS_SECTION'),
   '单例分区关闭编辑器后保持同一完成状态');
 const summaryPlan=buildSectionPlan([
   {index:'entry',section:'教育经历',label:'教育经历',kind:'section-entry',operations:['CLICK']},
   {index:'add',section:'教育经历',label:'添加',kind:'card',operations:['CLICK']},
-  {index:'edit',section:'教育经历',label:'编辑',kind:'card',operations:['CLICK']}
-],{education:[{institution:'示例大学 A'},{institution:'示例大学 B'}]}, {'教育经历|0':{completed:true}},
+  {index:'edit',section:'教育经历',label:'编辑',summaryText:'学校名称 示例大学 A 入学时间 2025-09-01',kind:'card',operations:['CLICK']}
+],{education:[{institution:'示例大学 A'},{institution:'示例大学 B'}]}, {[recordLedgerKey('教育经历','education',resume,0)]:{completed:true}},
   {activeSection:'教育经历',text:'学校名称 示例大学 A 入学时间 2025-09-01'});
 assert.equal(summaryPlan.actions.find(a=>a.operation==='ADD_RECORD')?.recordIndex,1,
   '摘要态已保存的学校用于记录盘点，下一条绑定本科');
 console.log('section planner tests passed');
+const datedResume={education:[{institution:'同名大学',startDate:'2021-09-01',endDate:'2025-06-30'},
+  {institution:'同名大学',startDate:'2025-09-01',endDate:'2026-11-30'}]};
+const reorderedSummary=[{index:'entry',section:'教育经历',label:'教育经历',kind:'section-entry',operations:['CLICK']},
+  {index:'add',section:'教育经历',label:'添加',kind:'card',operations:['CLICK']},
+  {index:'edit',section:'教育经历',label:'编辑',kind:'card',summaryText:'同名大学 2025-09-01 2026-11-30',operations:['CLICK']}];
+const reorderedLedger={'教育经历|*':{activeBlock:'education'},
+  [recordLedgerKey('教育经历','education',datedResume,1)]:{completed:true}};
+assert.equal(buildSectionPlan(reorderedSummary,datedResume,reorderedLedger,{activeSection:'教育经历'})
+  .actions.find(action=>action.operation==='ADD_RECORD')?.recordIndex,0,'新增由缺失来源决定，支持已有第二条排在前面');
+assert.equal(buildSectionPlan(reorderedSummary,datedResume,{'教育经历|*':{activeBlock:'education'}},{activeSection:'教育经历'})
+  .actions.find(action=>action.operation==='FOCUS_SECTION')?.recordIndex,1,'编辑摘要通过日期选择相同学校的正确来源');
+const ambiguousSummary=reorderedSummary.map(el=>el.index==='edit'?{...el,summaryText:'同名大学'}:el);
+assert.ok(!buildSectionPlan(ambiguousSummary,datedResume,{'教育经历|*':{activeBlock:'education'}},{activeSection:'教育经历'})
+  .actions.some(action=>['ADD_RECORD','FOCUS_SECTION'].includes(action.operation)),'同名摘要无法消歧时保留现场');
 const skillResume={professionalSkills:[{name:'Python'},{name:'TypeScript'},{name:'C++'}]};
 const skillSummary=[{index:'nav',section:'专业技能',label:'专业技能',kind:'section-entry',operations:['CLICK']},
- {index:'edit',section:'专业技能',label:'编辑',kind:'card',operations:['CLICK']},
+ {index:'edit',section:'专业技能',label:'编辑',summaryText:'专业技能 Python',kind:'card',operations:['CLICK']},
  {index:'add',section:'专业技能',label:'添加',kind:'card',operations:['CLICK']}];
-const afterSkipped=buildSectionPlan(skillSummary,skillResume,{'专业技能|0':{completed:true},'专业技能|1':{skipped:true}},
+const afterSkipped=buildSectionPlan(skillSummary,skillResume,{[recordLedgerKey('专业技能','professionalSkills',skillResume,0)]:{completed:true},[recordLedgerKey('专业技能','professionalSkills',skillResume,1)]:{skipped:true}},
  {activeSection:'专业技能',text:'专业技能 Python 编辑'});
 assert.ok(afterSkipped.actions.some(a=>a.operation==='ADD_RECORD' && a.recordIndex===2),'一条资料缺少网站选项时继续下一条');
-const exhaustedSkills=buildSectionPlan(skillSummary,skillResume,{'专业技能|0':{completed:true},'专业技能|1':{skipped:true},'专业技能|2':{completed:true}},
+const exhaustedSkills=buildSectionPlan(skillSummary,skillResume,{[recordLedgerKey('专业技能','professionalSkills',skillResume,0)]:{completed:true},[recordLedgerKey('专业技能','professionalSkills',skillResume,1)]:{skipped:true},[recordLedgerKey('专业技能','professionalSkills',skillResume,2)]:{completed:true}},
  {activeSection:'奖励荣誉',text:'奖励荣誉'});
 assert.ok(!exhaustedSkills.actions.some(a=>a.section==='专业技能'),'本轮已处理全部资料的分区不再进入候选');
 const languageComplete=buildActionPlan([
@@ -371,9 +387,9 @@ const completedOther = buildActionPlan([
 ],{application:{emergencyContactName:'测试联系人'}},[],{title:'其他信息',scopedSection:true,ignoreUnmapped:true});
 assert.ok(completedOther.actions.some(a=>a.target==='save'),'保存按钮周围的问句不能将按钮绑定为未完成字段');
 const customSkillControls=[{index:'nav',section:'专业技能',kind:'section-entry',label:'专业技能',operations:['CLICK']},
- ...[0,1,2,3].map(i=>({index:'edit'+i,section:'专业技能',kind:'card',label:'编辑',operations:['CLICK']}))];
+ ...[0,1,2,3].map(i=>({index:'edit'+i,section:'专业技能',kind:'card',label:'编辑',summaryText:['技能类型 Python','技能类型 C/C++','技能类型 其他技能 其他技能 --','技能类型 其他技能 其他技能 --'][i],operations:['CLICK']}))];
 const customSkillPlan=buildSectionPlan(customSkillControls,{professionalSkills:[{name:'Python'},{name:'TypeScript'},{name:'C++'},{name:'LangGraph'}]},
- {'专业技能|0':{completed:true},'专业技能|2':{completed:true}},
+ {[recordLedgerKey('专业技能','professionalSkills',skillResume,0)]:{completed:true},[recordLedgerKey('专业技能','professionalSkills',skillResume,2)]:{completed:true}},
  {activeSection:'专业技能',text:'技能类型 Python 编辑 技能类型 C/C++ 编辑 技能类型 其他技能 其他技能 -- 编辑 技能类型 其他技能 其他技能 -- 编辑'});
 assert.ok(customSkillPlan.actions.some(a=>a.target==='edit2' && a.recordIndex===1),'空自定义记录绑定到尚未出现的资料，保留已有技能身份');
 const customSkillField=buildActionPlan([

@@ -28,8 +28,10 @@ const customSkill=planObservedPopup({elements:[option('custom','其他技能'),.
 assert.equal(customSkill.actions[0].target,'custom');
 assert.equal(customSkill.actions[0].intent,'OPEN');
 const sourcePlan=planObservedPopup({elements:[option('official','龙湖官网/官微'),option('duplicate','龙湖官网/官微'),option('school','学校就业网'),option('other','其他')],
- field:{formRule:'recruitment-source',value:'校园招聘官网'},history:[],matchesValue:(el,value)=>el.label===value});
+ field:{path:'application.recruitmentSource',value:'校园招聘官网'},history:[],matchesValue:(el,value)=>el.label===value});
 assert.deepEqual(sourcePlan.actions.filter(a=>a.intent==='CHOOSE').map(a=>a.target),['official']);
+assert.equal(sourcePlan.actions.find(a=>a.intent==='CHOOSE').resolvedValue,'龙湖官网/官微',
+  '招聘渠道保留来源事实并以页面真实选项作为提交回读值');
 const mokaRelativePlan=planObservedPopup({
   elements:[
     {...option('card-yes','是'),kind:'card'},

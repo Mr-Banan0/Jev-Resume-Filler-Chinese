@@ -1,10 +1,10 @@
-// 用离线自测页(tests/fixture/honor-form.html)驱动 content.js，
+// 用离线自测页(tests/fixture/controls-form.html)驱动 content.js，
 // 断言"视口外字段可采集""隐藏域排除""自定义下拉展开后出现浮层选项"等行为。
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'fs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
-const html = readFileSync(`${ROOT}/tests/fixture/honor-form.html`, 'utf8');
+const html = readFileSync(`${ROOT}/tests/fixture/controls-form.html`, 'utf8');
 
 const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true });
 const { window } = dom;
@@ -146,7 +146,7 @@ const checks = [
   ['同意声明勾选框被救回', proxies.some((e) => e.role === 'checkbox' && e.label.includes('同意'))],
   ['代理条目带 viaProxy 标记', proxies.every((e) => e.viaProxy === true)],
   ['代理条目只给 CLICK', proxies.every((e) => e.operations.length === 1 && e.operations[0] === 'CLICK')],
-  ['代理条目 kind=custom-checkbox', proxies.every((e) => e.kind === 'custom-checkbox')],
+  ['代理条目保留单选或勾选语义', proxies.every((e) => e.kind === (e.role === 'radio' ? 'custom-radio' : 'custom-checkbox'))],
   ['代理条目带回 checked 状态', proxies.every((e) => typeof e.checked === 'boolean')],
   ['点代理 label 真的勾上了单选框', maleChecked === true],
   ['点代理 label 真的勾上了勾选框', agreeChecked === true],

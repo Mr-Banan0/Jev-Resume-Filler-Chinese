@@ -49,8 +49,23 @@
       if (mokaValue) return mokaValue;
     }
     if (isEditable(el)) return editableText(el).slice(0, 200);
-    if (family === 'virtual-select' && el.closest?.('.phoenix-select')) {
-      const text = tidy(el.closest('.phoenix-select').innerText || el.closest('.phoenix-select').textContent || '');
+    if (['virtual-select','autocomplete'].includes(family) && el.closest?.('.ud__select')) {
+      const host = el.closest('.ud__select');
+      const content = host.querySelector('.ud__select__selector__content')?.cloneNode(true);
+      content?.querySelectorAll('.ud__select__selector__placeholder,.ud__select__selector__search,input,button')
+        .forEach(node=>node.remove());
+      if (content) return tidy(content.textContent || '');
+      // 自定义联想框用普通文本输入承载已确认学校，标准枚举选择器使用独立展示节点。
+      if (el.matches?.('input,textarea')) return el.value || '';
+    }
+    if (['virtual-select','date-picker'].includes(family) && el.closest?.('.phoenix-select')) {
+      const display = el.closest('.phoenix-select').cloneNode(true);
+      display.querySelectorAll('.phoenix-select__calcEle,.phoenix-select__inputWrapper,input,.phoenix-select__switchArrow,.phoenix-select__clearIcon')
+        .forEach(node=>node.remove());
+      const leaves=[display,...display.querySelectorAll('*')].filter(node=>node.children.length===0);
+      const text=[...new Set(leaves.map(node=>tidy(node.textContent || '')).filter(Boolean))].join(' ');
+      const dates=[...new Set(text.match(/\d{4}-\d{2}(?:-\d{2})?/g) || [])];
+      if (dates.length===1) return dates[0];
       return /^(?:请选择|请输入)?$/.test(text) || text === tidy(label) ? '' : text;
     }
     if (el.matches?.('input,textarea')) {
@@ -129,6 +144,7 @@
   }
 
   function stableKey(entry, occurrence) {
+    if (entry.nodeKey) return entry.nodeKey;
     return [entry.section, entry.context, entry.widgetFamily, entry.role, normalize(entry.label), occurrence]
       .filter(value => value !== undefined && value !== '').join('|');
   }

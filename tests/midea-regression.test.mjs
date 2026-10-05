@@ -30,7 +30,7 @@ assert.equal(school?.kind, 'combobox', '普通 input 外观的学校检索框应
 assert.equal(school?.fieldProtocol, 'search-select', '学校检索框应公开选项确认协议');
 
 const resume = prepareResume({
-  education: [{ institution: '南京大学', studyType: '本科', studyMode: '全日制' }],
+  education: [{ institution: '示例大学 B', studyType: '本科', studyMode: '全日制' }],
   internship: [{ company: '示例公司', summary: '负责整理实验数据并交付分析报告。' }]
 });
 const educationPlan = buildActionPlan(page.elements.filter(el => el.section === '教育经历'), resume, [],
@@ -41,8 +41,8 @@ assert.ok(educationPlan.actions.some(action => action.resumeField === 'education
   '学习方式为空时应打开对应的自定义下拉');
 
 const schoolChoice = buildActionPlan([
-  { index: 'school', section: '教育经历', recordIndex: 0, kind: 'combobox', fieldProtocol: 'search-select', label: '学校名称', value: '南京大学', operations: ['TYPE_TEXT', 'CLICK'] },
-  { index: 'school-option', context: 'popup', kind: 'option-item', label: '南京大学', operations: ['CLICK'], value: '' }
+  { index: 'school', section: '教育经历', recordIndex: 0, kind: 'combobox', fieldProtocol: 'search-select', label: '学校名称', value: '示例大学 B', operations: ['TYPE_TEXT', 'CLICK'] },
+  { index: 'school-option', context: 'popup', kind: 'option-item', label: '示例大学 B', operations: ['CLICK'], value: '' }
 ], resume, [{ kind: 'type_text', controlKind: 'combobox', resumeField: 'education[0].institution' }],
 { title: '教育经历', scopedSection: true });
 assert.equal(schoolChoice.actions[0]?.target, 'school-option', '学校输入后存在候选时应先选择候选项');

@@ -811,7 +811,11 @@ async function dumpPageStructure() {
       return;
     }
     const s = frames.find(frame=>frame.frameId===0)?.structure || frames[0].structure;
-    const blob = new Blob([JSON.stringify({frames}, null, 2)], { type: 'application/json' });
+    const {fillEvents=[]}=await chrome.storage.session.get(['fillEvents']);
+    const events=fillEvents.map(({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,
+      pickerField,options,candidates}) =>
+      ({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,pickerField,options,candidates}));
+    const blob = new Blob([JSON.stringify({frames,events}, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

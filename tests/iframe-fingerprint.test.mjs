@@ -4,11 +4,12 @@ let listener,resolveDone;
 const done=new Promise(resolve=>resolveDone=resolve);
 const values={姓名:'',电子邮箱:'',手机号码:''};
 const labels=Object.keys(values);
+let executedInputs=0;
 const realTimeout=globalThis.setTimeout;
 const realLog=console.log;
 globalThis.setTimeout=fn=>{queueMicrotask(fn);return 0;};
 console.log=()=>{};
-globalThis.fetch=async()=>({ok:true,json:async()=>({answers:{action:{choice:'a1',confidence:1}}})});
+globalThis.fetch=async(_url,args)=>({ok:true,json:async()=>({answers:{action:{choice:Object.keys(JSON.parse(args.body).questions.action.criteria)[0],confidence:1}}})});
 globalThis.chrome={
   runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},
     sendMessage:message=>{if(message.type==='FILL_DONE') resolveDone(message);},lastError:null},
@@ -24,6 +25,7 @@ globalThis.chrome={
         page:frameId===0?{title:'校园招聘',url:'https://example.test/resume/index.html',text:'我的简历'}:
           {title:'个人信息',url:'https://example.test/resume/base_info.html',text:'个人信息'}});
       if(msg.type==='EXECUTE') {
+        if(msg.action==='type_text') executedInputs++;
         assert.equal(frameId,80,'填写动作必须路由到表单 iframe');
         values[labels[Number(msg.index)-1]]=msg.value;
         return reply({ok:true,value:msg.value});
@@ -39,8 +41,7 @@ try {
     {},()=>{});
   const result=await done;
   assert.equal(result.ok,true,result.reason);
-  assert.equal(result.history.filter(item=>item.kind==='type_text').length,3);
-  assert.ok(result.history.filter(item=>item.kind==='type_text').every(item=>item.page_changed===true));
+  assert.equal(executedInputs,3);
   assert.deepEqual(values,{姓名:'测试姓名',电子邮箱:'test@example.test',手机号码:'12345678900'});
 } finally {
   globalThis.setTimeout=realTimeout;

@@ -18,7 +18,7 @@ const MIME = {
 
 const server = createServer((req, res) => {
   const urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
-  const rel = urlPath === "/" ? "honor-form.html" : urlPath.replace(/^\/+/, "");
+  const rel = urlPath === "/" ? "controls-form.html" : urlPath.replace(/^\/+/, "");
   const target = normalize(join(ROOT, rel));
 
   // 防目录穿越

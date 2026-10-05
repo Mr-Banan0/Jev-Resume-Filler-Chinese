@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 
+// 原专用域名同样执行共享分区调度，覆盖复合资料块及重复记录。
+const pageUrl=process.argv.includes('--former-honor-host') ?
+  'https://career.honor.com/mc/deliver/resumerDetail' : 'https://example.test/form';
+
 const resume={basics:{name:'示例姓名'},education:[
   {institution:'示例大学 A',studyType:'硕士',startDate:'2025-09-01',researchFocus:'城市计算'},
   {institution:'示例大学 B',studyType:'本科',startDate:'2021-09-01',researchFocus:'空间分析'}
-],languages:[{language:'英语'}],projects:[{name:'外部分区项目'}]};
+],languages:[{language:'英语'}],projects:[{name:'外部分区项目'}],family:[{name:'示例父亲'}]};
 const values={name:'',language:''};
 const rows=[{school:'',level:'',date:'',focus:''}];
 let popup=null,revision=0,listener,resolveDone,addCount=0;
@@ -51,13 +55,13 @@ globalThis.fetch=async(_url,args)=>{
 globalThis.chrome={
   runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},
     sendMessage:msg=>{if(msg.type==='FILL_DONE') resolveDone(msg);},lastError:null},
-  tabs:{query:async()=>[{id:1,title:'简历编辑',url:'https://example.test/form'}],
+  tabs:{query:async()=>[{id:1,title:'简历编辑',url:pageUrl}],
     sendMessage(_id,msg,_opts,reply){
       if(msg.type==='PING') return reply({ok:true});
       if(msg.type==='CLOSE_TRANSACTIONS'){popup=null;return reply({ok:true});}
       if(msg.type==='FINGERPRINT') return reply({ok:true,fingerprint:String(revision)});
       if(msg.type==='SNAPSHOT_FULL') return reply({ok:true,elements:elements(),fingerprint:String(revision),
-        page:{title:'简历编辑',url:'https://example.test/form',text:'个人信息 语言能力'}});
+        page:{title:'简历编辑',url:pageUrl,text:'个人信息 语言能力'}});
       if(msg.type==='EXECUTE') {
         executions.push(msg);
         assert.notEqual(msg.index,'submit','最终投递始终保留用户操作');
@@ -80,6 +84,8 @@ try {
   listener({type:'START_FILL',apiKey:'synthetic',resume},{},()=>{});
   const result=await completion;
   assert.equal(result.ok,true,JSON.stringify(result));
+  assert.ok(!result.pendingIssues.some(issue=>/family/.test(issue.reason || '')),
+    '个人姓名验收只使用已选资料块，家庭姓名进入自己的分区');
   assert.equal(addCount,1,'两段教育只新增一次');
   assert.deepEqual(rows,resume.education.map(record=>({school:record.institution,level:record.studyType,
     date:record.startDate,focus:record.researchFocus})));

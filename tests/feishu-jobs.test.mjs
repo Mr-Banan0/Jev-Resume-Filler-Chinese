@@ -133,7 +133,7 @@ assert.deepEqual({...languageClickPoint?.point}, {x:110,y:25},
 
 const resume = {
   basics:{name:'示例姓名'},
-  education:[{institution:'香港示例大学',studyType:'硕士',area:'计算机科学与技术',startDate:'2025-09-01',endDate:'2026-11-30'}],
+  education:[{institution:'示例大学 A',studyType:'硕士',area:'计算机科学与技术',startDate:'2025-09-01',endDate:'2026-11-30'}],
   internship:[{company:'示例公司',position:'实习生',startDate:'2026-07-01',endDate:'2026-11-30'}]
 };
 const educationPlan = buildActionPlan(education, resume, [], {title:'教育经历',platform:'feishu-jobs'});
@@ -156,12 +156,12 @@ const schoolSearchPlan = buildActionPlan([
 ], resume, [{kind:'click', resumeField:'education[0].institution', label:'学校名称', controlKind:'combobox'}],
 {title:'教育经历', platform:'feishu-jobs'});
 assert.deepEqual(schoolSearchPlan.actions.map(action => ({target:action.target, field:action.resumeField, value:action.resolvedValue})), [{
-  target:'search', field:'education[0].institution', value:'香港示例大学'
+  target:'search', field:'education[0].institution', value:'示例大学 A'
 }], '飞书通用搜索框应保持学校字段的选择器事务');
 
 const schoolChoicePlan = buildActionPlan([
-  {index:'school', section:'教育经历', label:'学校名称', kind:'input', fieldProtocol:'search-select', valueCommitted:false, operations:['TYPE_TEXT'], value:'香港示例大学'},
-  {index:'choice', section:'教育经历', label:'香港示例大学', kind:'option-item', context:'popup', operations:['CLICK'], value:''}
+  {index:'school', section:'教育经历', label:'学校名称', kind:'input', fieldProtocol:'search-select', valueCommitted:false, operations:['TYPE_TEXT'], value:'示例大学 A'},
+  {index:'choice', section:'教育经历', label:'示例大学 A', kind:'option-item', context:'popup', operations:['CLICK'], value:''}
 ], resume, [{kind:'type_text', context:'popup', resumeField:'education[0].institution', label:'学校名称'}],
 {title:'教育经历', platform:'feishu-jobs'});
 assert.equal(schoolChoicePlan.actions[0]?.target, 'choice', '飞书学校搜索出现候选时先提交匹配选项');

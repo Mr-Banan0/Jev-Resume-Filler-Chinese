@@ -38,20 +38,24 @@ let handler;
 w.chrome={runtime:{onMessage:{addListener:fn=>handler=fn},sendMessage:()=>{}}};
 w.eval(readFileSync(new URL('../content/content.js',import.meta.url),'utf8'));
 const send=msg=>new Promise(resolve=>handler(msg,{},resolve));
-let state=(await send({type:'ITER_STATE'})).state;
-assert.equal(state.current,'个人信息');
-assert.deepEqual(Array.from(state.sections),['个人信息','求职意向','教育经历']);
-assert.equal(state.editorCount,1);
-assert.equal((await send({type:'ITER_NAVIGATE',section:'求职意向'})).ok,true);
-state=(await send({type:'ITER_STATE'})).state;
-assert.equal(state.current,'求职意向');
+const observe=()=>send({type:'SNAPSHOT_FULL'});
+const clickLabel=async(label,kind)=>{
+  const snap=await observe(),target=snap.elements.find(el=>el.label===label && (!kind || el.kind===kind));
+  assert.ok(target,`Missing observed control: ${label}`);
+  return send({type:'EXECUTE',action:'click',index:target.index});
+};
+assert.equal((await observe()).page.activeSection,'个人信息');
+assert.deepEqual(Array.from((await observe()).elements.filter(el=>el.kind==='section-entry').map(el=>el.section)),
+  ['个人信息','求职意向','教育经历']);
+assert.equal((await clickLabel('求职意向','section-entry')).ok,true);
+assert.equal((await observe()).page.activeSection,'求职意向');
 assert.equal(active,1);
-assert.equal((await send({type:'ITER_OPEN_EDITOR'})).ok,true);
-assert.equal((await send({type:'ITER_STATE'})).state.editorOpen,true);
-assert.equal((await send({type:'ITER_DIALOG_BUTTON',label:'取消'})).ok,true);
-assert.equal((await send({type:'ITER_STATE'})).state.editorOpen,false);
-assert.equal((await send({type:'ITER_NAVIGATE',section:'教育经历'})).ok,true);
-assert.equal((await send({type:'ITER_STATE'})).state.current,'教育经历');
+assert.equal((await clickLabel('编辑')).ok,true);
+assert.equal((await observe()).page.editorSurface,true);
+assert.equal((await clickLabel('取消')).ok,true);
+assert.equal((await observe()).page.editorSurface,false);
+assert.equal((await clickLabel('教育经历','section-entry')).ok,true);
+assert.equal((await observe()).page.activeSection,'教育经历');
 let snapshot=await send({type:'SNAPSHOT_FULL'});
 const ethnicity=snapshot.elements.find(el=>el.label==='民族');
 assert.equal(ethnicity.kind,'custom-select');
@@ -62,7 +66,9 @@ doc.querySelector('.mFormRadio li').classList.add('cur');
 snapshot=await send({type:'SNAPSHOT_FULL'});
 assert.ok(!buildActionPlan(snapshot.elements,{basics:{gender:'男'}},[],{title:'个人信息'}).actions.some(action=>action.resumeField==='basics.gender'));
 assert.ok(buildActionPlan(snapshot.elements,{basics:{location:{city:'南京市',region:{province:'浙江省',city:'南京市'}}}},[],{title:'个人信息'}).actions.some(action=>action.resumeField==='basics.location.city'));
-assert.ok(buildActionPlan(snapshot.elements,{basics:{}},[],{title:'个人信息'}).actions.some(action=>action.formRule==='iter-recruitment-source'));
+assert.ok(buildActionPlan(snapshot.elements.filter(el=>el.name==='recSources'),
+  {application:{recruitmentSource:'校园招聘官网'}},[],{title:'个人信息',dataBlock:'application',recordScope:true})
+  .actions.some(action=>action.resumeField==='application.recruitmentSource'));
 assert.ok(buildActionPlan([{index:'1',role:'textbox',kind:'custom-select',label:'工作性质',value:'',operations:['CLICK']}],
   {internship:[{company:'测试公司'}]},[],{title:'社会实习经历',recordIndex:0}).actions.some(action=>action.formRule==='iter-internship-work-type'));
 assert.ok(buildActionPlan([{index:'1',role:'option',kind:'option',label:'实习',value:'',context:'popup',operations:['CLICK']}],
@@ -86,7 +92,8 @@ assert.ok(campusPlan.actions.some(action=>action.resumeField==='campusPractice[1
 assert.ok(campusPlan.actions.some(action=>action.resumeField==='campusPractice[1].startDate'));
 assert.ok(campusPlan.actions.some(action=>action.resumeField==='campusPractice[1].endDate'));
 assert.ok(campusPlan.actions.some(action=>action.resumeField==='campusPractice[1].summary'));
-assert.doesNotThrow(()=>buildActionPlan(snapshot.elements,{basics:{}},[{kind:'click',formRule:'iter-recruitment-source',context:null}],{title:'个人信息'}));
+assert.doesNotThrow(()=>buildActionPlan(snapshot.elements,{application:{recruitmentSource:'校园招聘官网'}},
+  [{kind:'click',resumeField:'application.recruitmentSource',context:null}],{title:'个人信息'}));
 assert.ok(!buildActionPlan([{index:'1',role:'textbox',kind:'custom-select',label:'婚姻状况',name:'marriage',value:'',operations:['CLICK']}],
   {basics:{birthDate:'2001-02-10'}},[],{title:'个人信息'}).actions.some(action=>action.resumeField==='basics.age'));
 assert.ok(buildActionPlan([{index:'1',role:'textbox',kind:'custom-select',label:'排名',value:'',operations:['CLICK']}],
@@ -107,10 +114,10 @@ assert.ok(snapshot.elements.some(el=>el.label==='汉族'&&el.context==='popup'))
 const awardsLink=doc.createElement('a');awardsLink.href='javascript:;';awardsLink.textContent='奖励';doc.querySelector('nav').append(awardsLink);
 const awardsCard=doc.createElement('div');awardsCard.className='resumeContent';awardsCard.textContent='奖学金 其他奖项';doc.body.append(awardsCard);
 cards.forEach(id=>doc.getElementById(id).style.display='none');
-assert.equal((await send({type:'ITER_NAVIGATE',section:'奖励'})).ok,true);
-assert.equal((await send({type:'ITER_STATE'})).state.current,'奖励');
+assert.equal((await clickLabel('奖励','section-entry')).ok,true);
+assert.equal((await observe()).page.activeSection,'奖励');
 awardsCard.textContent='教育经历 '.repeat(20)+'示例大学 时间：2025-09-01 至 2026-11-30';
-assert.ok((await send({type:'ITER_STATE'})).state.overviewText.includes('2026-11-30'));
+assert.ok((await observe()).page.text.includes('2026-11-30'));
 const english=prepareResume({languages:[{language:'英语',fluency:'CET-6、雅思 7.0(6)'}]});
 assert.deepEqual(english.englishLevels,[{level:'雅思IELTS',score:'7.0'}]);
 assert.ok(buildActionPlan([{index:'1',kind:'custom-select',label:'英语等级',value:'',operations:['CLICK']}],

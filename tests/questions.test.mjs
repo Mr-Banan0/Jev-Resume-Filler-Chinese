@@ -4,6 +4,7 @@ const { buildActionPlan, buildSectionPlan, buildQuestions, prepareResume } = awa
 );
 
 const resume = {
+  application: {recruitmentSource:'校园招聘官网'},
   basics: {
     name: '测试姓名',
     gender: '女',
@@ -31,16 +32,16 @@ const applicationPlan = buildActionPlan([
   {index:'city',section:'申请信息',kind:'custom-select',label:'选择意向工作城市',value:'',operations:['CLICK']}
 ], preparedLocation, [], {title:'申请信息'});
 
-// 荣耀：文本输入 + 自定义下拉；最终投递控件始终不进入候选。
-const honorElements = [
+// 通用表单：文本输入 + 自定义下拉；最终投递控件始终不进入候选。
+const formElements = [
   { index: 'f0_1', role: 'textbox', kind: 'input', label: '请填写姓名', value: '', operations: ['TYPE_TEXT'] },
   { index: 'f0_2', role: 'textbox', kind: 'input', label: '请填写个人邮箱', value: '', operations: ['TYPE_TEXT'] },
   { index: 'f0_3', role: 'combobox', kind: 'custom-select', label: '性别', value: '', operations: ['CLICK'] },
   { index: 'f0_4', role: 'button', kind: 'action', label: '提交简历', value: '', operations: ['CLICK'] },
   { index: 'f0_5', role: 'textbox', kind: 'richtext', label: '个人成就', value: '', operations: ['TYPE_TEXT'], offscreen: true }
 ];
-const honorPlan = buildActionPlan(honorElements, resume);
-const honorQuestions = buildQuestions(GOAL, honorPlan);
+const formPlan = buildActionPlan(formElements, resume);
+const formQuestions = buildQuestions(GOAL, formPlan);
 
 // 字节：单页原生控件已经填好时，计划应报告完成；“提交简历”不参与判断。
 const byteElements = [
@@ -77,18 +78,21 @@ const offscreenPlan = buildActionPlan([
 ], resume);
 
 // 当前分区满足后，只生成向前的分区动作。
-const sectionPlan = buildActionPlan([
+const sectionControls = [
   { index: 'f0_1', role: 'textbox', kind: 'input', label: '姓名', value: '测试姓名', operations: ['TYPE_TEXT'] },
   { index: 'f0_2', role: 'button', kind: 'action', label: '上一步', value: '', operations: ['CLICK'] },
   { index: 'f0_3', role: 'button', kind: 'action', label: '下一步', value: '', operations: ['CLICK'] }
-], resume);
+];
+const sectionPlan = buildSectionPlan(sectionControls.map(el=>({...el,section:'个人信息'})),resume,
+  {'个人信息|*':{deferred:true,completedBlocks:['basics']}});
+const fieldNavigationPlan = buildActionPlan(sectionControls,resume);
 
 // 选择器打开后，浮层选项绑定到刚刚打开的字段，避免“本科 / 2024”一类值跨经历串位。
 const popupPlan = buildActionPlan([
   { index: 'f0_9', role: 'option', kind: 'option-item', context: 'popup', label: '女', value: '', operations: ['CLICK'] }
 ], resume, [{ kind: 'click', resumeField: 'basics.gender' }]);
 
-// 荣耀 picker 需要先选值再点“确定”。弹层存在时，候选必须锁定在这段事务内。
+// 通用表单 picker 需要先选值再点“确定”。弹层存在时，候选必须锁定在这段事务内。
 const pickerValuePlan = buildActionPlan([
   { index: 'f0_16', role: 'option', kind: 'option-item', context: 'popup', label: '女', value: '', operations: ['CLICK'] },
   { index: 'f0_17', role: 'option', kind: 'option-item', context: 'popup', label: '男', value: '', operations: ['CLICK'] },
@@ -135,12 +139,12 @@ const photoResume = {basics:{photo:{name:'头像.png',type:'image/png',dataUrl:'
 const photoControl = {index:'f0_30',role:'button',kind:'file',section:'上传',label:'上传照片',value:'',operations:['UPLOAD_FILE']};
 const photoPlan = buildActionPlan([photoControl], photoResume, [], {title:'微众银行 - 校园招聘'});
 const uploadedPhotoPlan = buildActionPlan([photoControl], photoResume,
-  [{kind:'upload_file',resumeField:'basics.photo'}], {title:'微众银行 - 校园招聘'});
+  [{kind:'upload_file',resumeField:'basics.photo',controlStableKey:'f0_30',verified:true}], {title:'微众银行 - 校园招聘'});
 const attachmentResume = {basics:{resumeFile:{name:'简历.docx',type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',dataUrl:'data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,AA=='}}};
 const attachmentControl = {index:'f0_31',role:'button',kind:'file',section:'上传',label:'上传简历',value:'',operations:['UPLOAD_FILE']};
 const attachmentPlan = buildActionPlan([attachmentControl], attachmentResume, [], {title:'微众银行 - 校园招聘'});
 const uploadedAttachmentPlan = buildActionPlan([attachmentControl], attachmentResume,
-  [{kind:'upload_file',resumeField:'basics.resumeFile'}], {title:'微众银行 - 校园招聘'});
+  [{kind:'upload_file',resumeField:'basics.resumeFile',controlStableKey:'f0_31',verified:true}], {title:'微众银行 - 校园招聘'});
 const countryCodePlan = buildActionPlan([
   {index:'f0_31',role:'textbox',kind:'combobox',section:'个人信息',label:'手机号码',value:'+86',operations:['TYPE_TEXT','CLICK']},
   {index:'f0_32',role:'textbox',kind:'input',section:'个人信息',label:'手机号码',value:'',operations:['TYPE_TEXT']}
@@ -161,21 +165,21 @@ const mokaCityPreference = buildActionPlan([
 const mokaRecruitmentSource = buildActionPlan([
   {index:'moka-source',role:'textbox',kind:'custom-select',section:'个人信息',
     label:'了解到明源云校招的途径 ？',value:'',operations:['CLICK']}
-], resume, [], {title:'明源云集团 - 校园招聘',url:'https://app.mokahr.com/apply'});
+], resume, [], {title:'个人信息',dataBlock:'application',recordScope:true,url:'https://app.mokahr.com/apply'});
 const mokaEducationRegion = buildActionPlan([
   {index:'moka-region',role:'textbox',kind:'custom-select',section:'个人信息',
     label:'最高学历所在地',value:'',operations:['CLICK']}
 ], {basics:{highestDegree:'硕士'},education:[{degree:'硕士',institution:'香港示例大学'}]}, [],
   {title:'明源云集团 - 校园招聘',url:'https://app.mokahr.com/apply'});
 
-const criteria = honorQuestions.action?.criteria || {};
+const criteria = formQuestions.action?.criteria || {};
 const checks = [
-  ['荣耀姓名动作绑定本地姓名字段', actionFor(honorPlan, 'f0_1', 'basics.name')?.operation === 'TYPE_TEXT'],
-  ['荣耀邮箱动作绑定本地邮箱字段', actionFor(honorPlan, 'f0_2', 'basics.email')?.operation === 'TYPE_TEXT'],
-  ['荣耀自定义性别字段生成点击入口', actionFor(honorPlan, 'f0_3', 'basics.gender')?.operation === 'CLICK'],
-  ['最终投递控件未进入荣耀候选', !honorPlan.actions.some((a) => a.target === 'f0_4')],
-  ['个人成就不再复用自我介绍字段', !honorPlan.actions.some((a) => a.target === 'f0_5')],
-  ['Jev 只接收一个完整动作问题', Object.keys(honorQuestions).length === 1 && !!honorQuestions.action],
+  ['通用表单姓名动作绑定本地姓名字段', actionFor(formPlan, 'f0_1', 'basics.name')?.operation === 'TYPE_TEXT'],
+  ['通用表单邮箱动作绑定本地邮箱字段', actionFor(formPlan, 'f0_2', 'basics.email')?.operation === 'TYPE_TEXT'],
+  ['通用表单自定义性别字段生成点击入口', actionFor(formPlan, 'f0_3', 'basics.gender')?.operation === 'CLICK'],
+  ['最终投递控件未进入通用表单候选', !formPlan.actions.some((a) => a.target === 'f0_4')],
+  ['个人成就不再复用自我介绍字段', !formPlan.actions.some((a) => a.target === 'f0_5')],
+  ['Jev 只接收一个完整动作问题', Object.keys(formQuestions).length === 1 && !!formQuestions.action],
   ['每个普通候选包含动作、目标与字段绑定', Object.values(criteria).every((a) => a.operation && a.target && a.resume_field)],
   ['候选中没有 BLOCKED / DONE 等模型终止操作', !JSON.stringify(criteria).match(/BLOCKED|\bDONE\b/)],
   ['候选摘要不包含简历具体值', !JSON.stringify(criteria).includes('测试姓名') && !JSON.stringify(criteria).includes('test@example.com')],
@@ -197,15 +201,16 @@ const checks = [
   ['意向工作地点不复用岗位调配的“是”',
     !mokaCityPreference.actions.some((a) => a.target === 'moka-city' && a.formRule === 'job-adjustment-yes')],
   ['校招途径绑定招聘信息来源',
-    mokaRecruitmentSource.actions.some((a) => a.target === 'moka-source' && a.formRule === 'recruitment-source')],
+    mokaRecruitmentSource.actions.some((a) => a.target === 'moka-source' && a.resumeField === 'application.recruitmentSource')],
   ['有香港高校证据时最高学历所在地选海外',
     mokaEducationRegion.actions.some((a) => a.target === 'moka-region' && a.formRule === 'highest-education-region' && a.value === '海外')],
   ['视口外字段仍保留填写候选', actionFor(offscreenPlan, 'f0_1', 'basics.email')?.operation === 'TYPE_TEXT'],
   ['视口外字段保持填写动作，执行层负责定位目标', !offscreenPlan.actions.some((a) => a.operation === 'SCROLL_DOWN')],
   ['当前分区满足后只生成向前的下一步动作',
-    sectionPlan.actions.some((a) => a.target === 'f0_3') && !sectionPlan.actions.some((a) => a.target === 'f0_2')],
+    sectionPlan.actions.some((a) => a.target === 'f0_3' && a.operation==='NEXT_SECTION_PAGE') &&
+      !fieldNavigationPlan.actions.some(a=>a.target==='f0_3') && !sectionPlan.actions.some((a) => a.target === 'f0_2')],
   ['打开选择器后浮层选项绑定刚打开的性别字段', actionFor(popupPlan, 'f0_9', 'basics.gender')?.operation === 'CLICK'],
-  ['打开荣耀 picker 后只提供匹配值选项', pickerValuePlan.actions.filter(a=>a.intent!=='RETURN').length === 1 && actionFor(pickerValuePlan, 'f0_16', 'basics.gender')?.operation === 'CLICK'],
+  ['打开通用表单 picker 后只提供匹配值选项', pickerValuePlan.actions.filter(a=>a.intent!=='RETURN').length === 1 && actionFor(pickerValuePlan, 'f0_16', 'basics.gender')?.operation === 'CLICK'],
   ['选值后只提供 picker 内确定动作', pickerConfirmPlan.actions.filter(a=>a.intent!=='RETURN').length === 1 && actionFor(pickerConfirmPlan, 'f0_18', 'basics.gender')?.operation === 'CLICK'],
   ['缺少出生日时不打开日期 picker', !unsafePickerPlan.actions.some((a) => a.target === 'f0_1')],
   ['扁平籍贯不驱动级联地点 picker', !unsafePickerPlan.actions.some((a) => a.target === 'f0_2')]
@@ -231,7 +236,7 @@ const checks = [
     actionFor(applicationPlan,'city','expected.city')?.operation === 'CLICK']
 ];
 
-console.log('完整动作候选数（荣耀 / 虎牙）:', honorPlan.actions.length, '/', huyaPlan.actions.length);
+console.log('完整动作候选数（通用表单 / 虎牙）:', formPlan.actions.length, '/', huyaPlan.actions.length);
 console.log('\n=== 完整动作候选断言 ===');
 let pass = true;
 for (const [name, ok] of checks) {

@@ -4,7 +4,7 @@ const completion=new Promise(resolve=>complete=resolve);
 const timer=globalThis.setTimeout, log=console.log;
 globalThis.setTimeout=fn=>{queueMicrotask(fn);return 0;};
 console.log=()=>{};
-globalThis.fetch=async()=>({ok:true,json:async()=>({answers:{action:{choice:'a1',confidence:1}}})});
+globalThis.fetch=async(_url,args)=>({ok:true,json:async()=>({answers:{action:{choice:Object.keys(JSON.parse(args.body).questions.action.criteria)[0],confidence:1}}})});
 globalThis.chrome={
   runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},
     sendMessage:m=>{if(m.type==='FILL_DONE') complete(m);},lastError:null},
@@ -26,7 +26,7 @@ try {
   await import('../background/service-worker.js');
   listener({type:'START_FILL',apiKey:'synthetic-key',resume:{basics:{birthDate:'2001-02-10',email:'test@example.com'}}},{},()=>{});
   const result=await completion;
-  assert.equal(email,'test@example.com','日期点击失败后仍完成邮箱');
+  assert.equal(email,'test@example.com',JSON.stringify(result));
   assert.ok(clicks<=4,'字段重试有界');
   assert.ok(result.pendingIssues?.length,'失败字段保留待补证据');
 } finally {globalThis.setTimeout=timer;console.log=log;}
