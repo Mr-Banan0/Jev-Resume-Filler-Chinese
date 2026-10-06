@@ -9,7 +9,7 @@ globalThis.fetch=async(_url,args)=>({ok:true,json:async()=>({answers:{action:{ch
 globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},lastError:null,
   sendMessage:msg=>{if(msg.type==='FILL_DONE')resolveDone(msg);}},scripting:{executeScript:async()=>[{frameId:0}]},storage:{session:{set:async()=>{}}},
   tabs:{query:async()=>[{id:1,url:'https://example.test/form'}],sendMessage(_tab,msg,_opts,reply){
-    if(msg.type==='PING'||msg.type==='CLOSE_TRANSACTIONS')return reply({ok:true});
+    if(msg.type==='PING'||msg.type==='CLOSE_TRANSACTIONS')return reply({ok:true,version:'2026-10-07.57'});
     if(msg.type==='FINGERPRINT')return reply({ok:true,fingerprint:String(stale?++revision:revision)});
     if(msg.type==='SNAPSHOT_FULL')return reply({ok:true,fingerprint:String(revision),page:{url:'https://example.test/form',title:'简历'},elements:[
       {index:'field',stableKey:'reused-node',label:page===0?'姓名':'手机号码',kind:'input',value:values[page],operations:['TYPE_TEXT']},
@@ -26,7 +26,7 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
   }}};
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',apiKey:'synthetic',resume:{basics:{name:'合成姓名',phone:'13000000000'}}},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-07.57',apiKey:'synthetic',resume:{basics:{name:'合成姓名',phone:'13000000000'}}},{},()=>{});
   const result=await completion;
   if(stale){assert.equal(result.ok,false);assert.equal(inputs,0,'过期目标始终保持只读');}
   else {assert.equal(result.ok,true,JSON.stringify(result));assert.deepEqual(values,['合成姓名','13000000000']);assert.equal(navigations,1);}

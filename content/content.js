@@ -3,7 +3,7 @@
 
 (function () {
   // Popup 在扩展重载后用此版本识别遗留页面中的旧 content script，并主动替换。
-  const CONTENT_SCRIPT_VERSION = '2026-10-05.37';
+  const CONTENT_SCRIPT_VERSION = '2026-10-07.57';
   const previousContentVersion = globalThis.__jevResumeFillerContentVersion;
   if (previousContentVersion && previousContentVersion !== CONTENT_SCRIPT_VERSION) {
     // Chrome 重载扩展时会保留页面隔离世界。释放旧实例的注册标记，让新代码
@@ -66,7 +66,7 @@
     '英语能力', '其他外语能力', '计算机技能', '证书', '校内职务', '培训经历',
     '个人专利', '发明专利', '专利', '论文著作', '论文', '发表论文',
     '其他家庭成员关系', '自我评价', '个人承诺', '基本信息', '基础信息', '附件简历', '获奖', '作品', '社交账号',
-    '论文/专著', '附加问题', '公司及应聘者声明', '候选人声明', '社会实习经历', '奖励', '技能特长'
+    '论文/专著', '附加问题', '公司及应聘者声明', '候选人声明', '社会实习经历', '奖励', '技能特长', '诚信承诺'
   ]);
 
   // 同一控件族会部署在企业自有域名；以渲染后的表单结构识别，域名仅作早期兜底。
@@ -163,6 +163,14 @@
   }
 
   function structuredFieldCaption(el) {
+    const local = el.closest('[class*="apply-field-"],.el-form-item,.ant-form-item,[data-field-id]');
+    if (local) {
+      const title = Array.from(local.querySelectorAll('[class*="title" i],label,[class*="label" i]'))
+        .find(node => !node.contains(el) && !node.querySelector('input,select,textarea') &&
+          !node.closest('[role="listbox"],[role="option"]'));
+      const text = tidyLabel(title?.textContent || '').replace(/\s*[*＊]\s*$/, '').trim();
+      if (isFieldCaption(text)) return text;
+    }
     const formilyRow = el.closest('.ud-formily-item');
     if (formilyRow) {
       const caption = Array.from(formilyRow.querySelectorAll('.ud-formily-item-label')).find(node =>
@@ -247,32 +255,66 @@
 
   function buildSectionMarkers() {
     const isFieldChoice = el => !!el.closest('select,option,[role="option"],[role="listbox"],[role="menu"],.el-select,.el-select-dropdown,.ant-select,.ant-select-dropdown,.ant-cascader-menus');
+    const fieldRow = el => el.closest('.form-row,.form-item,.el-form-item,.ant-form-item,.my-list-item,.ud-formily-item,[class*="apply-field-"],[data-field-id]') ||
+      el.parentElement?.closest('[class*="field" i]');
     const known = Array.from(document.querySelectorAll('body *')).filter(el => {
       if (!isVisible(el) || isFieldChoice(el)) return false;
-      const fieldContainer = el.closest('.form-item,.el-form-item,.ant-form-item,[class*="field" i]');
+      const fieldContainer = fieldRow(el);
       if (fieldContainer?.querySelector('input:not([type="hidden"]),textarea,select,[role="combobox"]')) return false;
-      const text = tidyLabel(el.textContent || '');
+      const copy = el.cloneNode(true);
+      copy.querySelectorAll('button,a,[role="button"],input,select,textarea').forEach(node=>node.remove());
+      const text = tidyLabel(copy.textContent || '').replace(/\s*(?:必填|添加|新增|编辑)\s*$/, '').trim();
       if (!FORM_SECTION_TITLES.has(text)) return false;
+      el.__jevObservedSectionTitle = text;
       return !Array.from(el.children).some(child => tidyLabel(child.textContent || '') === text);
     });
     // 已知标题与动态标题一起采集；同一页面常混合通用分区和 ATS 自定义分区。
-    const dynamic = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6,legend,[role="heading"],[class*="title" i],[class*="header" i]')).filter(el => {
+    const dynamic = Array.from(document.querySelectorAll('body *')).filter(el => {
       if (!isVisible(el) || isFieldChoice(el)) return false;
-      const fieldContainer = el.closest('.form-item,.el-form-item,.ant-form-item,[class*="field" i]');
+      if (el.querySelector('input:not([type="hidden"]),textarea,select,[role="combobox"]')) return false;
+      const fieldContainer = fieldRow(el);
       if (fieldContainer?.querySelector('input:not([type="hidden"]),textarea,select,[role="combobox"]')) return false;
-      const text = tidyLabel(el.textContent || '');
-      if (text.length < 2 || text.length > 14) return false;
+      const copy=el.cloneNode(true);
+      copy.querySelectorAll('button,a,[role="button"],input,select,textarea').forEach(node=>node.remove());
+      const text = tidyLabel(copy.textContent || '').replace(/\s*(?:必填|添加|新增|编辑)\s*$/, '').trim();
+      if (text.length < 2 || text.length > 40) return false;
+      if (/^(?:请|若有|如有|含)|详尽|能让|了解您|温馨提示/.test(text)) return false;
       if (/^(?:\+?\s*)?(?:新增|添加|增加|编辑|删除)/.test(text)) return false;
-      if (!/(信息|经历|背景|经验|能力|技能|证书|奖项|成果|项目|实践|作品|上传|确认|意向|声明|教育|工作|实习|培训|语言|资格|家庭|校园|开放|附件|专利|论文|著作)/.test(text)) return false;
+      const declared = el.matches('h1,h2,h3,h4,h5,h6,legend,[role="heading"]');
+      const textChildren=Array.from(copy.children).filter(child=>tidyLabel(child.textContent || ''));
+      if(!declared && textChildren.length>1 && !Array.from(copy.childNodes).some(node=>
+        node.nodeType===Node.TEXT_NODE && tidyLabel(node.textContent || ''))) return false;
+      const ownsFields = !!el.parentElement?.querySelector('input,textarea,select,[role="combobox"]');
+      const styledHeading=el.matches('[class*="title" i],[class*="header" i]');
+      const semanticTitle=/(信息|经历|背景|经验|能力|技能|证书|奖项|成果|项目|实践|作品|上传|确认|意向|声明|教育|工作|实习|培训|语言|资格|家庭|校园|开放|附件|专利|论文|著作|奖励|表彰|承诺)/.test(text);
+      // 匿名样式标题由附近的独立表单模块提供结构证据。
+      let nearbyModule=false;
+      for(let node=el.parentElement,depth=0;node && depth<3;node=node.parentElement,depth++) {
+        if(Array.from(node.querySelectorAll('.ux-standard-form,.form-part,[role="form"]'))
+          .some(module=>!module.contains(el))) {nearbyModule=true;break;}
+      }
+      if (!declared && !styledHeading && !(semanticTitle && nearbyModule)) return false;
+      if (!declared && !ownsFields && !semanticTitle) return false;
+      el.__jevObservedSectionTitle = text;
       return !Array.from(el.children).some(child => tidyLabel(child.textContent || '') === text);
     });
     sectionMarkers = [...new Set([...known, ...dynamic])]
       .sort((left, right) => left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
       .map(el => {
-        const raw = tidyLabel(el.textContent || '');
+        const raw = el.__jevObservedSectionTitle || tidyLabel(el.textContent || '');
         const title = raw.replace(/\s*必填\s*$/, '').trim();
         return { el, title: FORM_SECTION_TITLES.has(title) ? title : raw };
       });
+    // 标题拥有的最近表单容器建立物理边界；平铺标题保留 DOM 位置证据。
+    for (const marker of sectionMarkers) {
+      for (let node=marker.el.parentElement,depth=0;node && depth<5 && node!==document.body;node=node.parentElement,depth++) {
+        if (!node.querySelector('input,textarea,select,[role="combobox"]')) continue;
+        if (sectionMarkers.some(other=>other!==marker && other.title!==marker.title &&
+            node.contains(other.el) && !marker.el.contains(other.el))) break;
+        marker.container=node;
+        break;
+      }
+    }
   }
 
   function sectionForElement(el) {
@@ -291,6 +333,8 @@
     const module = el.closest?.('.apply-module__body');
     const moduleTitle = module?.querySelector('.form-content--title-box h6,.form-content--title-box h2');
     if (moduleTitle) return tidyLabel(moduleTitle.textContent).replace(/\s*必填\s*$/, '').trim();
+    const owned=sectionMarkers.filter(marker=>marker.container?.contains(el));
+    if (owned.length) return owned.sort((a,b)=>a.container.contains(b.container)?1:-1)[0].title;
     let found = '';
     for (const marker of sectionMarkers) {
       const relation = marker.el.compareDocumentPosition(el);
@@ -305,14 +349,9 @@
   function repeaterSectionFromLabel(label) {
     const compact = tidyLabel(label || '').replace(/\s/g, '');
     if (!/^(?:\+)?(?:新增|添加|增加)/.test(compact)) return '';
-    const aliases = [
-      ['发明专利', '发明专利'], ['个人专利', '个人专利'], ['论文著作', '论文著作'], ['论文', '论文'],
-      ['获奖经历', '获奖经历'], ['获奖情况', '获奖情况'], ['教育经历', '教育经历'], ['教育背景', '教育背景'],
-      ['实习经历', '实习经历'], ['工作经历', '工作经历'], ['项目经验', '项目经验'], ['项目经历', '项目经历'],
-      ['语言能力', '语言能力'], ['英语能力', '英语能力'], ['社会实践经历', '社会实践经历'],
-      ['校内实践经历', '校内实践经历'], ['培训经历', '培训经历'], ['证书', '证书']
-    ];
-    return aliases.find(([alias]) => compact.includes(alias))?.[1] || '';
+    const title=compact.replace(/^(?:\+)?(?:新增|添加|增加)/,'');
+    if(!title) return '';
+    return sectionMarkers.find(marker=>marker.title.replace(/\s/g,'')===title)?.title || title;
   }
 
   function activeSectionTitle() {
@@ -368,6 +407,19 @@
     const triggerHost=transactionTrigger?.isConnected && transactionTrigger.closest('.phoenix-select');
     if (triggerHost) {
       const anchor=triggerHost.getBoundingClientRect();
+      // 带“选择→确认”的复合弹层作为完整事务表面，保留搜索、选项和确认栏。
+      const compound=Array.from(document.querySelectorAll('.constant-main-selector-container,.area-selector-container'))
+        .filter(surface=>{
+          if (!isVisible(surface)) return false;
+          const box=surface.getBoundingClientRect();
+          return box.width>0 && box.height>0 && notOccluded(surface,box) &&
+            Math.min(box.right,anchor.right)>Math.max(box.left,anchor.left) &&
+            Math.min(Math.abs(box.top-anchor.bottom),Math.abs(box.bottom-anchor.top))<320;
+        }).sort((a,b)=>{
+          const x=a.getBoundingClientRect(),y=b.getBoundingClientRect();
+          return Math.abs(x.top-anchor.bottom)-Math.abs(y.top-anchor.bottom);
+        });
+      if (compound.length) return compound[0];
       const phoenixLists=Array.from(document.querySelectorAll('[class*="phoenix-selectList__virtualList-holder-inner"]'))
         .filter(list=>{
           if (!isVisible(list)) return false;
@@ -386,6 +438,8 @@
       })[0];
       const choices=Array.from(document.querySelectorAll('ul,div')).filter(list=>{
         if (!isVisible(list) || list.closest('nav,header,[role="navigation"]')) return false;
+        // 月份／日期网格由日期事务持有，表格导航保持在原表单的记录上下文内。
+        if (list.querySelector('table')) return false;
         let floating=false;
         for (let node=list,depth=0;node && node!==document.body && depth<4;node=node.parentElement,depth++) {
           if (['absolute','fixed'].includes(window.getComputedStyle(node).position)) { floating=true; break; }
@@ -810,8 +864,7 @@
 
   // Moka 把一段起止时间拆为连续的「年、月、年、月」四个无 name 输入框。
   // 实际站点会在每个输入外包多层校验和动画节点，不能依赖某个固定父容器。
-  // 直接使用页面中可见年月输入的 DOM 序列：教育、实习、项目均以完整四栏组出现，
-  // 因而索引除以四后的余数就是稳定的局部字段身份。
+  // 年月槽位属于最近的复合日期项；缺少结束日期时保持当前记录的边界。
   function localDateSlot(el) {
     if (!isMokaFormPage() || !el) return null;
     const input = el.matches?.('input') ? el : el.querySelector?.('input[placeholder="年"],input[placeholder="月"]');
@@ -822,15 +875,11 @@
       const unit = tidyLabel(input.getAttribute('placeholder') || '');
       return (unit === '年' || unit === '月') && isVisible(input);
     });
-    // 首选包含完整起止日期的最近容器，既保留 DOM 顺序，也与其他教育/实习记录隔离。
-    let group = null;
-    for (let parent = input.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
-      const inputs = dateInputs(parent);
-      if (inputs.length >= 4) { group = inputs; break; }
-    }
-    const controls = group || dateInputs(document);
+    const row=input.closest('[class*="apply-field-"],.form-item,.el-form-item,.mFormTime');
+    if (!row) return null;
+    const controls = dateInputs(row);
     const index = controls.indexOf(input);
-    return index >= 0 ? index % 4 : null;
+    return index >= 0 ? index : null;
   }
 
   // Moka 的重复记录在选值后会清掉 placeholder，不能再依赖“年/月”或字段文案
@@ -892,32 +941,6 @@
       pendingDateSlot += 1;
       if (pendingDateSlot === personalDateLabels.length) pendingDateRecord = null;
     }
-    const dateGroupSize = new Map([
-      ['教育背景', 4], ['教育经历', 4], ['实习经历', 4], ['工作经历', 4],
-      ['项目经验', 4], ['项目经历', 4], ['获奖经历', 2]
-    ]);
-    for (const [section, size] of dateGroupSize) {
-      const local = items.filter(item => item.entry.context !== 'popup' && item.entry.section === section);
-      let dateOrdinal = 0;
-      let currentRecord = -1;
-      for (const item of local) {
-        const {stateEl, entry} = item;
-        const input = stateEl?.matches?.('input') ? stateEl : stateEl?.querySelector?.('input');
-        const placeholder = tidyLabel(input?.getAttribute?.('placeholder') || entry.placeholder || '');
-        const shown = String(entry.value || entry.label || '').trim();
-        const numericSelected = entry.kind === 'custom-select' && /^\d{1,4}$/.test(shown);
-        const isDatePart = placeholder === '年' || placeholder === '月' || numericSelected;
-        if (isDatePart) {
-          currentRecord = Math.floor(dateOrdinal / size);
-          entry.recordIndex = currentRecord;
-          entry.dateSlot = dateOrdinal % size;
-          dateOrdinal += 1;
-        } else if (currentRecord >= 0 && !/^(?:\+\s*)?添加$/.test(String(entry.label || '').replace(/\s/g, ''))) {
-          entry.recordIndex = currentRecord;
-        }
-      }
-    }
-
     const anchors = new Map([['语言能力', /^(?:语言类型|语种)$/]]);
     for (const [section, anchor] of anchors) {
       let currentRecord = -1;
@@ -930,21 +953,69 @@
   }
 
   function annotateRepeatedContainers(items) {
-    const signature=node=>Array.from(node.querySelectorAll('input:not([type=hidden]),textarea,select'))
-      .slice(0,4).map(el=>`${deriveLabel(el)}:${el.getAttribute('placeholder') || el.type}`).join('|');
+    const signature=node=>[...new Set(Array.from(node.querySelectorAll('input:not([type=hidden]),textarea,select'))
+      .map(el=>structuredFieldCaption(el) || nearestFieldCaption(el) || deriveLabel(el))
+      .filter(label=>label && !/^(?:\d+|年|月|请选择)$/.test(label)))].sort().join('|');
     const metadata=new Map();
     for (const {stateEl,entry} of items) {
-      if (entry.context==='popup' || Number.isInteger(entry.recordIndex) || !stateEl) continue;
-      for (let node=stateEl.parentElement,depth=0;node && depth<9;node=node.parentElement,depth++) {
+      if (entry.context==='popup' || !stateEl || ['action','card','section-entry'].includes(entry.kind)) continue;
+      for (let node=stateEl.parentElement,depth=0;node && depth<16 && node!==document.body;node=node.parentElement,depth++) {
         if (!metadata.has(node)) {
           const controls=node.querySelectorAll('input:not([type=hidden]),textarea,select');
           const peers=controls.length>=2 ? Array.from(node.parentElement?.children || []).filter(peer=>
             peer.tagName===node.tagName && peer.className===node.className &&
-            signature(peer)===signature(node) && peer.querySelectorAll('input:not([type=hidden]),textarea,select').length>=2) : [];
-          metadata.set(node,peers.length>1 ? peers.indexOf(node) : null);
+            signature(peer)===signature(node) && peer.querySelectorAll('input:not([type=hidden]),textarea,select').length>=2 &&
+            sectionForElement(peer.querySelector('input,textarea,select'))===entry.section) : [];
+          const fieldNames=signature(node).split('|').filter(Boolean);
+          const captions=Array.from(controls).map(el=>structuredFieldCaption(el) || nearestFieldCaption(el) || deriveLabel(el))
+            .filter(label=>label && !/日期|时间|年份|月份|^(?:年|月|请选择|\d+)$/.test(label));
+          const repeatedCaption=new Set(captions).size<captions.length;
+          const singleRecord=peers.length===1 && fieldNames.length>=2 &&
+            Array.from(node.parentElement?.children || []).some(sibling=>sibling!==node &&
+              sibling.matches('h1,h2,h3,h4,legend,[role=heading],[class*=Title],[class*=title]') &&
+              !sibling.querySelector('input,textarea,select'));
+          // 第一条记录也建立物理身份，新增第二条时原字段继续归属于第一条。
+          const phoenixRecord=node.matches('.form-part') && !!node.closest('.ux-standard-form') && fieldNames.length>=2;
+          const phoenixPeers=phoenixRecord ? Array.from(document.querySelectorAll('.ux-standard-form .form-part')).filter(peer=>
+            sectionForElement(peer.querySelector('input,textarea,select'))===entry.section) : [];
+          metadata.set(node,repeatedCaption ? null : phoenixRecord ? phoenixPeers.indexOf(node) : peers.length>1 || singleRecord ? peers.indexOf(node) : null);
         }
-        if (metadata.get(node)!==null) { entry.recordIndex=metadata.get(node); break; }
+        if (metadata.get(node)!==null) {
+          entry.recordIndex=metadata.get(node);
+          entry.recordStableKey=nodeId(node);
+          break;
+        }
       }
+    }
+  }
+
+  function annotateLocalDateParts(items) {
+    const groups=new Map();
+    for (const item of items) {
+      const {stateEl,entry}=item;
+      if (entry.context==='popup') continue;
+      const input=stateEl?.matches?.('input') ? stateEl : stateEl?.querySelector?.('input');
+      const unit=tidyLabel(input?.getAttribute('placeholder') || entry.placeholder || '');
+      if (entry.kind!=='custom-select' || !/^(年|月)$/.test(unit) && !/^\d{1,4}$/.test(String(entry.value || ''))) continue;
+      // 最近的复合日期表单项决定槽位，勾选至今后隐藏的结束日期只影响本项。
+      const row=input?.closest('[class*="apply-field-"],.form-item,.el-form-item,.mFormTime');
+      const key=row || `${entry.section}|${entry.recordIndex ?? 0}`;
+      if(!groups.has(key)) groups.set(key,[]);
+      groups.get(key).push(item);
+    }
+    for(const local of groups.values()) {
+      const caption=structuredFieldCaption(local[0].stateEl) || '';
+      const award=/奖|表彰|荣誉/.test(`${local[0].entry.section} ${caption}`);
+      const education=/教育|学业|就读|入学|毕业/.test(`${local[0].entry.section} ${caption}`);
+      const edge=/结束|毕业|离职/.test(caption) ? 2 : 0;
+      local.forEach(({entry},slot)=>{
+        entry.dateSlot=edge+slot;
+        if (!Number.isInteger(entry.recordIndex)) entry.recordIndex=0;
+        entry.datePart=slot % 2 ? 'month' : 'year';
+        entry.label=award ? ['获奖年份','获奖月份'][slot] :
+          (education ? ['入学年份','入学月份','毕业年份','毕业月份'] :
+            ['开始年份','开始月份','结束年份','结束月份'])[edge+slot] || caption;
+      });
     }
   }
 
@@ -1107,6 +1178,7 @@
 
     if (type === "file") return "file";
     if (isEditableEl(el)) return "richtext";
+    if (tag === 'textarea') return 'textarea';
     // 飞书招聘将一组“起止时间”封装为一个可编辑范围输入。使用单一事务写入
     // 起始与结束月份，避免把同一输入框分别绑定为两个独立日期字段。
     if (isFeishuDateRange(el)) return 'feishu-date-range';
@@ -1506,11 +1578,43 @@
     return r;
   }
 
+  // 选择状态以组件公开的 ARIA 或可见皮肤为准；隐藏 input 仅在没有表面状态时回读。
+  function readChoiceChecked(el) {
+    const aria=el?.getAttribute?.('aria-checked');
+    if (aria==='true' || aria==='false') return aria==='true';
+    const component=el?.closest?.('.phoenix-checkbox');
+    const skin=el?.closest?.('.phoenix-checkbox__realInput') ||
+      (component?.querySelectorAll('input').length===1 ? component.querySelector('.phoenix-checkbox__realInput') : null);
+    if (skin) return skin.classList.contains('phoenix-checkbox__realInput--checked');
+    const host=el?.parentElement;
+    if (host?.querySelectorAll('input,select,textarea').length===1) {
+      const surface=Array.from(host.children).find(node=>node!==el && node.hasAttribute('aria-checked'));
+      if (surface) return surface.getAttribute('aria-checked')==='true';
+    }
+    return el?.checked===true;
+  }
+
   function resolveVisibleProxy(el) {
     if (!PROXY_ROLES.has(deriveRole(el))) return null;
     const candidates = [labelFor(el), el.closest("label")];
     // 有些组件把皮肤做成 [role=checkbox] 的容器，label 反而是它的兄弟
     candidates.push(el.closest('[role="checkbox"],[role="radio"]'));
+    const choiceComponent=el.closest('.phoenix-checkbox');
+    if (choiceComponent?.querySelectorAll('input').length===1) {
+      candidates.push(choiceComponent.querySelector('.phoenix-checkbox__realInput'));
+    }
+    const host=el.parentElement;
+    if (host?.querySelectorAll('input,select,textarea').length===1) {
+      // 隐藏原生状态通常与可见皮肤并列。点击皮肤使事件经过组件自己的处理器。
+      for (const sibling of [el.nextElementSibling,el.previousElementSibling]) {
+        if (sibling && !sibling.querySelector('input,select,textarea') &&
+            (!tidyLabel(sibling.textContent || '') || sibling.hasAttribute('aria-checked'))) candidates.push(sibling);
+      }
+    }
+    for (let parent=el.parentElement,depth=0;parent && depth<2;parent=parent.parentElement,depth++) {
+      const text=tidyLabel(parent.textContent || '');
+      if (text && text.length<=40) candidates.push(parent);
+    }
 
     for (const cand of candidates) {
       if (!cand || cand === el) continue;
@@ -1590,7 +1694,7 @@
       for (const el of all) {
         if (seen.has(el)) continue;
         if (el.closest('.el-picker-panel td')) continue;
-        if (el.closest('.phoenix-radio,.ud__select,.ud__picker,.throne-biz-date-range-picker-input')) continue;
+        if (el.closest('.phoenix-radio,.phoenix-select,.ud__select,.ud__picker,.throne-biz-date-range-picker-input')) continue;
         // 飞书的选择控件把可见的“请选择／当前值”包在 role=combobox 内。
         // 它已经由控件采集器提供统一的 custom-select 条目；不再把内部展示层
         // 额外收为卡片，后续的“添加语言／项目／获奖”入口就不会被这些重复项挤出预算。
@@ -1626,7 +1730,7 @@
         candidates.push({el,text});
       }
     }
-    const priority = ({text}) => /^(?:\+\s*)?(?:添加|新增)(?:新的)?(?:教育|实习|工作|项目|语言|奖励|获奖|家庭|自我评价|自我描述)/.test(text) ? 3 :
+    const priority = ({text}) => repeaterSectionFromLabel(text) ? 3 :
       /(?:教育|工作|实习|项目|校园|语言|技能|奖励|荣誉|获奖|附件|个人信息|求职意向|自我评价|自我描述).{0,16}(?:添加|新增|编辑|完善|填写|未完成)/.test(text) ? 2 : 1;
     candidates.sort((left,right) => priority(right)-priority(left));
     const chosen = [];
@@ -1736,11 +1840,13 @@
       if (stateEl.required || stateEl.getAttribute('aria-required') === 'true' ||
           stateEl.closest('.my-list-item')?.querySelector('.header-title .icon-bitian') ||
           mokaRequired || localRequired) entry.required = true;
-      if (isBeisenFormPage() && stateEl) {
-        const error=stateEl.closest('.form-item')?.querySelector('.form-item__error');
-        if (error && isVisible(error) && tidyLabel(error.textContent || '')) {
-          entry.validationError=tidyLabel(error.textContent || '').slice(0,100);
-        }
+      if (stateEl) {
+        const row=stateEl.closest('[class*="apply-field-"],.form-item,.el-form-item,.ant-form-item,.ud-formily-item,[data-field-id]');
+        const described=(stateEl.getAttribute('aria-describedby') || '').split(/\s+/).map(id=>document.getElementById(id)).filter(Boolean);
+        const errors=[...described,...(row?.querySelectorAll('.form-item__error,.el-form-item__error,.ant-form-item-explain-error,[role="alert"],[class*="error" i],[class*="invalid" i]') || [])];
+        const error=errors.find(node=>isVisible(node) && /必填|未填写|不能为空|错误|格式|最多|至少|无效|required|invalid|exceed/i.test(tidyLabel(node.textContent || '')));
+        if (error) entry.validationError=tidyLabel(error.textContent).slice(0,160);
+        if (stateEl.getAttribute('aria-invalid')==='true' && !entry.validationError) entry.validationError='控件报告校验失败';
       }
       if (opts.context) entry.context = opts.context;
       if ((kind === 'date' && stateEl?.closest?.('.ud__picker')) ||
@@ -1785,7 +1891,7 @@
         }
       }
       if (stateEl && (role === "checkbox" || role === "radio")) {
-        entry.checked = stateEl.getAttribute('aria-checked') === 'true' || stateEl.checked === true;
+        entry.checked = readChoiceChecked(stateEl);
         if (role === 'radio') {
           const group=stateEl.closest('[role="radiogroup"],.ud__radio-group,.phoenix-radio-group,.ud-formily-item,fieldset');
           if (group) entry.choiceGroup=`radio-group-${Array.from(document.querySelectorAll(
@@ -1835,9 +1941,13 @@
       const role = deriveRole(el);
       const disabled = el.disabled === true || el.getAttribute("aria-disabled") === "true";
       const signals = formRuleSignals(el);
-      const ownOption = tidyLabel(resolved.proxy.textContent || '').replace(/^[*\s]+/, '');
+      const proxyText=tidyLabel(resolved.proxy.textContent || '');
+      const nearbyOption=[el.parentElement,el.parentElement?.parentElement].map(node=>tidyLabel(node?.textContent || ''))
+        .find(text=>/^(?:至今|目前|仍在职|在职)$/.test(text));
+      const ownOption = (proxyText || nearbyOption || '').replace(/^[*\s]+/, '');
       const label = signals.includes("agreement") ? "同意招聘协议" :
-        role === 'radio' && ownOption && ownOption.length <= 20 ? ownOption : deriveLabel(resolved.proxy);
+        (role === 'radio' && ownOption && ownOption.length <= 20 ||
+          role === 'checkbox' && /^(?:至今|目前|仍在职|在职)$/.test(ownOption)) ? ownOption : deriveLabel(resolved.proxy);
       pushEntry(el, {
         role,
         kind: role === 'radio' ? 'custom-radio' : 'custom-checkbox',
@@ -2032,36 +2142,11 @@
     // 这样执行器滚动某个年份控件后，它不会因为变成“视口内第一项”而从毕业年份漂移成入学年份。
     const allEntriesInDomOrder = [...inView, ...offView].sort((a, b) =>
       (a.entry.domOrder ?? 0) - (b.entry.domOrder ?? 0));
+    annotateRepeatedContainers(allEntriesInDomOrder);
     annotateMokaRecordMetadata(allEntriesInDomOrder);
     platformDrivers.annotateRecords(allEntriesInDomOrder, location.hostname, document);
     annotateSemanticRecords(allEntriesInDomOrder);
-    annotateRepeatedContainers(allEntriesInDomOrder);
-    const dateLabels = {
-      '教育背景':['入学年份','入学月份','毕业年份','毕业月份'],
-      '教育经历':['入学年份','入学月份','毕业年份','毕业月份'],
-      '实习经历':['开始年份','开始月份','结束年份','结束月份'],
-      '工作经历':['开始年份','开始月份','结束年份','结束月份'],
-      '项目经验':['项目开始年份','项目开始月份','项目结束年份','项目结束月份'],
-      '项目经历':['项目开始年份','项目开始月份','项目结束年份','项目结束月份'],
-      '获奖经历':['获奖年份','获奖月份']
-    };
-    const dateEntriesBySection = new Map();
-    for (const item of allEntriesInDomOrder) {
-      const { stateEl, entry } = item;
-      const dateInput = stateEl?.matches?.('input') ? stateEl : stateEl?.querySelector?.('input[placeholder="年"],input[placeholder="月"]');
-      const unit = tidyLabel(dateInput?.getAttribute?.('placeholder') || entry.placeholder || '');
-      const selectedNumber = entry.context !== 'popup' && entry.kind === 'custom-select' && /^\d{1,4}$/.test(String(entry.value || entry.label || '').trim());
-      if (!dateLabels[entry.section] || (unit !== '年' && unit !== '月' && entry.dateSlot === undefined && !selectedNumber)) continue;
-      if (!dateEntriesBySection.has(entry.section)) dateEntriesBySection.set(entry.section, []);
-      dateEntriesBySection.get(entry.section).push(item);
-    }
-    for (const [section, items] of dateEntriesBySection) {
-      const labels = dateLabels[section];
-      items.forEach(({entry}, position) => {
-        const slot = Number.isInteger(entry.dateSlot) ? entry.dateSlot : position % labels.length;
-        entry.label = labels[slot];
-      });
-    }
+    annotateLocalDateParts(allEntriesInDomOrder);
     annotateFieldGroups(allEntriesInDomOrder);
 
     // 控件身份沿完整 DOM 顺序生成，滚动和浮层预算只改变展示顺序。
@@ -2586,7 +2671,7 @@
     // 代理场景：点的是可见 label，状态藏在隐藏的 input 里
     const stateEl = elementStateRegistry[pos] || el;
     const meta = elementMetaRegistry[pos] || {};
-    const wasChecked = stateEl.checked;
+    const wasChecked = readChoiceChecked(stateEl);
     if (meta.context !== 'popup') transactionTrigger=stateEl.closest?.('.phoenix-select') || stateEl;
     if (meta.kind === 'section-entry' || /^(编辑|修改|新增|添加|增加)/.test(tidyLabel(meta.label))) selectedSection=meta.section || tidyLabel(meta.label);
     if (el.disabled || el.getAttribute("aria-disabled") === "true") {
@@ -2820,17 +2905,15 @@
         editor.dispatchEvent(new FocusEvent('focusout', { bubbles:true }));
       }
     }
-    // 代理兜底：点 label 后状态没变（有些组件把原生转发拦掉了），直接点它背后的 input。
-    // 已在勾选状态的单选框本来就不该再变，所以不会造成重复切换。
     if (stateEl !== el && stateEl.matches?.('input[type="checkbox"],input[type="radio"]') &&
-        typeof stateEl.click === "function" && stateEl.checked === wasChecked) {
-      stateEl.click();
+        readChoiceChecked(stateEl) === wasChecked && !(stateEl.type==='radio' && wasChecked)) {
+      return {ok:false,reason:'可见选择表面未更新状态，保留待复测',index};
     }
     return {
       ok: true,
       action: "click",
       index,
-      checked: stateEl === el ? undefined : stateEl.checked,
+      checked: stateEl === el ? undefined : readChoiceChecked(stateEl),
       label: (el.innerText || el.textContent || "").trim().slice(0, 40),
       clearedSelection: !!mokaClearTarget,
       reactClearHandled
@@ -3160,17 +3243,32 @@
         ].filter(Boolean).join(' ')));
     };
     const monthNames=['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+    const monthNumber=cell=>{
+      const label=tidyLabel(cell.textContent || '');
+      const numeric=label.match(/^(\d{1,2})月$/);
+      return numeric ? Number(numeric[1]) : monthNames.indexOf(label)+1;
+    };
     const semanticMonthCells=()=>Array.from(picker.querySelectorAll('table td')).filter(cell=>
-      isVisible(cell) && monthNames.includes(tidyLabel(cell.textContent || '')));
+      isVisible(cell) && monthNumber(cell)>=1 && monthNumber(cell)<=12);
+    const monthGrid=()=>{
+      const cells=semanticMonthCells();
+      let surface=cells[0]?.parentElement;
+      while (surface && !Array.from(surface.querySelectorAll('button,a,[role="button"]')).some(button=>
+        isVisible(button) && /^\d{4}(?:年)?$/.test(tidyLabel(button.textContent || '')))) surface=surface.parentElement;
+      const buttons=Array.from(surface?.querySelectorAll('button,a,[role="button"]') || [])
+        .filter(button=>isVisible(button) && !button.closest('table'));
+      const yearButton=buttons.find(button=>/^\d{4}(?:年)?$/.test(tidyLabel(button.textContent || '')));
+      return {cells,buttons,year:Number(tidyLabel(yearButton?.textContent || '').replace('年',''))};
+    };
     if (semanticMonthCells().length>=10) {
-      for (let tries=0; tries<120 && readMonth().year!==targetYear; tries++) {
-        const cells=semanticMonthCells();
-        let yearSurface=cells[0]?.parentElement;
-        while (yearSurface && !Array.from(yearSurface.querySelectorAll('button')).some(button=>
-          isVisible(button) && /^\d{4}(?:年)?$/.test(tidyLabel(button.textContent || '')))) yearSurface=yearSurface.parentElement;
-        const buttons=Array.from(yearSurface?.querySelectorAll('button') || []).filter(isVisible);
+      observedMonthControls.add(el);
+      const monthInput=el.matches?.('input') ? el : el.querySelector?.('input');
+      if (monthInput) observedMonthControls.add(monthInput);
+      for (let tries=0; tries<120 && monthGrid().year!==targetYear; tries++) {
+        const {buttons,year}=monthGrid();
+        if (!year) return {ok:false,reason:'年月面板的年份无法读取'};
         const arrows=buttons.filter(button=>!/^\d{4}(?:年)?$/.test(tidyLabel(button.textContent || '')));
-        const direction=targetYear<readMonth().year ? -1 : 1;
+        const direction=targetYear<year ? -1 : 1;
         const nav=arrows.length===2 ? arrows[direction<0 ? 0 : 1] : navigation(direction);
         if (!nav) return {ok:false,reason:'年月面板的年份导航不可用'};
         nav.click();
@@ -3178,16 +3276,13 @@
         picker=panel();
         if (!picker) return {ok:false,reason:'年月面板在年份导航时关闭'};
       }
-      if (readMonth().year!==targetYear) return {ok:false,reason:'年月面板未到达目标年份'};
-      const cell=semanticMonthCells().find(node=>monthNames.indexOf(tidyLabel(node.textContent || ''))+1===targetMonth);
+      if (monthGrid().year!==targetYear) return {ok:false,reason:'年月面板未到达目标年份'};
+      const cell=semanticMonthCells().find(node=>monthNumber(node)===targetMonth);
       if (!cell) return {ok:false,reason:'目标月份不可选'};
-      cell.click();
+      (cell.querySelector('a,button,[role="button"]') || cell).click();
       await sleep(80);
       const actual=String(getValue(el,'beisen-date') || '').trim();
       if (actual!==expectedPrefix) return {ok:false,reason:`年月回读不一致：${actual || '空白'}`,expected:expectedPrefix};
-      observedMonthControls.add(el);
-      const monthInput=el.matches?.('input') ? el : el.querySelector?.('input');
-      if (monthInput) observedMonthControls.add(monthInput);
       return {ok:true,action:'pick_date',index,value:actual,verified:true,precision:'month'};
     }
     for (let tries = 0; tries < 180; tries += 1) {
@@ -3219,8 +3314,10 @@
     dateCell.click();
     await sleep(80);
     const actual = String(getValue(el, 'beisen-date') || '').trim();
-    return actual.startsWith(expectedPrefix) ? {ok:true,action:'pick_date',index,value:actual,verified:true} :
-      {ok:false,reason:`北森日期回读不一致：${actual || '空白'}`,expected:expectedPrefix};
+    const expected=monthCells.length ? expectedPrefix : `${expectedPrefix}-${String(targetDay).padStart(2,'0')}`;
+    return actual===expected ? {ok:true,action:'pick_date',index,value:actual,verified:true,
+      precision:monthCells.length ? 'month' : 'day'} :
+      {ok:false,reason:`北森日期回读不一致：${actual || '空白'}`,expected};
   }
 
   async function executeDatePicker(index, value) {
@@ -3616,8 +3713,23 @@
 
     const snapshotEntries = buildElementTable().filter(entry => entry.context !== 'popup').map(entry => ({
           index:entry.index, section:entry.section, recordIndex:entry.recordIndex,
-          dateSlot:entry.dateSlot, label:entry.label, placeholder:entry.placeholder,
-          kind:entry.kind, domOrder:entry.domOrder, required:!!entry.required,
+          dateSlot:entry.dateSlot, datePart:entry.datePart, label:entry.label, placeholder:entry.placeholder,
+          recordStableKey:entry.recordStableKey, validationError:entry.validationError,
+          // 日期单元诊断仅供本地导出，帮助区分可见选中值与输入搜索状态。
+          ...(entry.datePart ? {dateObservedValue:entry.value, dateDom:
+            [elementRegistry[Number(entry.index)-1],elementRegistry[Number(entry.index)-1]?.parentElement,
+              elementRegistry[Number(entry.index)-1]?.parentElement?.parentElement].filter(Boolean).map(node=>({
+                tag:node.tagName,cls:String(node.className || ''),value:node.matches('input') ? node.value : undefined,
+                text:tidyLabel(node.textContent || '').slice(0,80),placeholder:node.getAttribute('placeholder')
+              }))} : {}),
+          kind:entry.kind, checked:entry.checked, domOrder:entry.domOrder, required:!!entry.required,
+          ...(entry.viaProxy && /checkbox|radio/.test(entry.kind) ? {proxyDom:
+            [elementRegistry[Number(entry.index)-1],elementStateRegistry[Number(entry.index)-1],
+              elementStateRegistry[Number(entry.index)-1]?.parentElement,
+              elementStateRegistry[Number(entry.index)-1]?.parentElement?.parentElement].filter(Boolean).map(node=>({
+                tag:node.tagName,cls:String(node.className || ''),role:node.getAttribute('role'),
+                ariaChecked:node.getAttribute('aria-checked'),cursor:window.getComputedStyle(node).cursor
+              }))} : {}),
           operations:entry.operations, hasValue:!!String(entry.value || '').trim()
         }));
 
@@ -3773,7 +3885,7 @@
     try {
       switch (msg.type) {
         case "PING":
-          sendResponse({ ok: true, url: location.href, version: CONTENT_SCRIPT_VERSION, message: "content script 收到 PING" });
+          sendResponse({ ok: true, url: location.href, version: CONTENT_SCRIPT_VERSION, protocolVersion:2, message: "content script 收到 PING" });
           return true;
 
         // 只回指纹，不建元素表：给 Service Worker 做"页面是否还是原来那张"的廉价检查
@@ -3786,6 +3898,8 @@
           const table = buildElementTable();
           sendResponse({
             ok: true,
+            version:CONTENT_SCRIPT_VERSION,
+            protocolVersion:2,
             count: table.length,
             elements: table,
             preview: table.slice(0, 5),

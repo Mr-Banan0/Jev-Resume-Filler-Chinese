@@ -20,6 +20,25 @@ assert.deepEqual(matchRecordSources(anchors.map(el=>({...el,recordStableKey:'sha
 assert.deepEqual(matchRecordSources(anchors,anchors,records,'company'),{0:null,1:null},'同名无日期保持冲突');
 assert.deepEqual(matchRecordSources([{recordIndex:0,value:'企业乙'},{recordIndex:1,value:''}],[],
   [{company:'企业甲'},{company:'企业乙'}],'company'),{0:1,1:0},'混合已有与空白记录使用未占用来源');
+const existingDescription='围绕城市多源数据构建空间预测系统，整合传感器和地理空间特征，设计可解释的学习流程并分析影响因素。';
+const partialProject={section:'项目经验',recordIndex:0,recordStableKey:'partial',kind:'input',label:'项目名称',value:''};
+const projectDescription={...partialProject,kind:'textarea',label:'项目描述',value:existingDescription};
+const projectSources=[{name:'新项目',description:'新项目的独立交付内容'},
+  {name:'城市分析项目',description:`项目背景：${existingDescription}\n成果：完成预测系统。`}];
+assert.deepEqual(matchRecordSources([partialProject],[partialProject,projectDescription],projectSources,'name'),{0:1},
+  '名称为空的已有记录使用描述证据绑定来源');
+assert.deepEqual(matchRecordSources([partialProject],[partialProject,{...projectDescription,value:'无关的已有经历描述'.repeat(8)}],projectSources,'name'),{0:null},
+  '无法确认的已有描述保留为身份冲突');
+const ongoingProject={...partialProject,value:'合成工具项目'};
+const ongoingSources=[{name:'合成工具项目',role:'独立开发者',startDate:'2026-09',endDate:'至今'}];
+const projectRole={...ongoingProject,label:'职务',value:'独立开发者'};
+const projectStart={...ongoingProject,label:'开始时间',value:'2026-09-01'};
+assert.deepEqual(matchRecordSources([ongoingProject],[ongoingProject,projectRole,projectStart],ongoingSources,'name'),{0:0},
+  '项目职务使用 role，日期身份按双方共有精度核对');
+assert.deepEqual(matchRecordSources([ongoingProject],[ongoingProject,projectRole,{...projectStart,value:'请选择'}],ongoingSources,'name'),{0:0},
+  '空日期提示不参与记录身份判断');
+assert.deepEqual(matchRecordSources([ongoingProject],[ongoingProject,{...projectRole,value:'另一职务'}],ongoingSources,'name'),{0:null},
+  '明确不同的项目职务保留冲突');
 const nameAnchors=anchors.map(el=>({...el,operations:['TYPE_TEXT']}));
 const fullControls=[...nameAnchors,...dates,{index:'f7_role',frameId:7,recordIndex:0,kind:'input',label:'职位名称',value:'',operations:['TYPE_TEXT']}];
 assert.ok(buildActionPlan(fullControls,{internship:records},[],{title:'实习经历',dataBlock:'internship',recordScope:true,recordIndex:1})

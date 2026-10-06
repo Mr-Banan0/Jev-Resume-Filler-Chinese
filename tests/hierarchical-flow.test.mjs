@@ -57,7 +57,7 @@ globalThis.chrome={
     sendMessage:msg=>{if(msg.type==='FILL_DONE') resolveDone(msg);},lastError:null},
   tabs:{query:async()=>[{id:1,title:'简历编辑',url:pageUrl}],
     sendMessage(_id,msg,_opts,reply){
-      if(msg.type==='PING') return reply({ok:true});
+      if(msg.type==='PING') return reply({ok:true,version:'2026-10-07.57'});
       if(msg.type==='CLOSE_TRANSACTIONS'){popup=null;return reply({ok:true});}
       if(msg.type==='FINGERPRINT') return reply({ok:true,fingerprint:String(revision)});
       if(msg.type==='SNAPSHOT_FULL') return reply({ok:true,elements:elements(),fingerprint:String(revision),
@@ -81,7 +81,7 @@ globalThis.chrome={
 };
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',apiKey:'synthetic',resume},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-07.57',apiKey:'synthetic',resume},{},()=>{});
   const result=await completion;
   assert.equal(result.ok,true,JSON.stringify(result));
   assert.ok(!result.pendingIssues.some(issue=>/family/.test(issue.reason || '')),

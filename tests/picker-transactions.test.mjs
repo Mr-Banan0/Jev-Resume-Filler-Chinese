@@ -163,7 +163,8 @@ const mokaDateControls=[
 ].map(([label,value], index)=>({index:`moka-date-${index}`,kind:'custom-select',label,value,
   operations:['CLICK'],section:'个人信息',recordIndex:Math.floor(index / 4),dateSlot:index % 4}));
 const mokaMonthPlan=buildActionPlan(mokaDateControls,mokaDateResume,[
-  {kind:'click',context:'popup',resumeField:'education[0].startDate.year',label:'2025'}
+  {kind:'click',context:'popup',resumeField:'education[0].startDate.year',label:'2025'},
+  {kind:'dependent-default',controlStableKey:'moka-date-1',ownedValue:'1',resumeField:'education[0].startDate.month'}
 ],
   {url:'https://app.mokahr.com/campus-recruitment/example',platform:'moka-form'});
 assert.deepEqual(mokaMonthPlan.actions.map(action=>action.resumeField),['education[0].startDate.month'],

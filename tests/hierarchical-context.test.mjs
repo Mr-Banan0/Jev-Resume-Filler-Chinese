@@ -4,6 +4,37 @@ import {recordLedgerKey} from '../lib/traversal-state.js';
 assert.deepEqual(prepareResume({basics:{highestDegree:'硕士'},education:[{studyType:'硕士'},{studyType:'本科'},{}]})
   .education.map(edu=>edu.isHighestEducation),['是','否',''],'最高学历判断来自已提供的学历；缺少学历保持待补');
 
+const mixedControls=[
+  {index:'name',stableKey:'name',section:'个人信息',kind:'input',label:'姓名',value:'示例姓名',operations:['TYPE_TEXT']},
+  {index:'mode',stableKey:'mode',section:'个人信息',kind:'custom-select',label:'学习形式',value:'',operations:['CLICK']}
+];
+const mixedResume={basics:{name:'示例姓名'},education:[{studyMode:'全日制'}]};
+const mixedPlan=buildDataBlockPlan('个人信息',mixedControls,mixedResume,['basics']);
+const mixedState=buildSectionJevState({page:{title:'个人信息',sectionScope:true},elements:mixedControls,
+  resume:mixedResume,actionPlan:mixedPlan});
+assert.deepEqual(mixedState.remaining_fields.map(field=>field.label),['学习形式'],
+  '混合分区再次路由时直接展示剩余字段标签');
+assert.equal(mixedState.controls.find(control=>control.label==='姓名').routing_eligible,false);
+assert.ok(mixedPlan.actions.some(action=>action.dataBlock==='education' && action.matched>0));
+assert.equal(prepareResume({internship:[{company:'示例机构',position:'开发实习生'}]})
+  .internship[0].hasExperience,'是','已提供的实习记录支持经历存在性问题');
+assert.equal(prepareResume({internship:[{}]}).internship[0].hasExperience,'',
+  '空记录保留存在性问题待补');
+assert.deepEqual(prepareResume({projects:[
+  {description:'项目背景：研究示例。\n评测：结果显示通过率提高。'},
+  {description:'评测目标：目标通过率达到90%。'},
+  {description:'最终成功定位问题来源。',outcomes:'用户提供的具体成果'},
+  {description:'参加公开会议并发表学术海报。'}
+]}).projects.map(project=>project.outcomes),
+['评测：结果显示通过率提高。','','用户提供的具体成果','参加公开会议并发表学术海报。'],
+'成果段落沿用原文，显式字段优先，计划指标保持独立');
+const sourcePlan=buildDataBlockPlan('个人信息',[
+  {index:'source',stableKey:'source',section:'个人信息',kind:'custom-select',
+    label:'招聘信息的来源',value:'',operations:['CLICK']}
+],{application:{recruitmentSource:'校园招聘官网'}},['basics','education']);
+assert.ok(sourcePlan.actions.some(action=>action.dataBlock==='application' && action.matched===1),
+  '混合分区在个人和教育资料之后继续发现招聘来源');
+
 const resume={
   basics:{name:'示例姓名',photo:{name:'photo.png',dataUrl:'data:image/png;base64,PRIVATE_BYTES'}},
   education:[{institution:'示例大学 A',studyType:'硕士',researchFocus:'城市计算'},
@@ -11,6 +42,12 @@ const resume={
   languages:[{language:'英语',score:'7.0'}],
   projects:[{name:'其他分区私有项目'}]
 };
+for (const label of ['人像面','身份证正面','国徽面','证件扫描']) {
+  const idUpload={index:label,stableKey:label,section:'个人信息',kind:'file',label,value:'',operations:['UPLOAD_FILE']};
+  const idPlan=buildActionPlan([idUpload],resume,[],{title:'个人信息',dataBlock:'basics',scopedSection:true,ignoreUnmapped:true});
+  assert.ok(!idPlan.actions.some(a=>a.operation==='BIND_FIELD' && a.resumeField==='basics.photo'),
+    '证件扫描与个人头像用途隔离');
+}
 const control={index:'f0_1',stableKey:'local-selector',section:'学业资料',recordIndex:1,
   label:'攻读层次',kind:'custom-select',value:'',operations:['CLICK']};
 const page={title:'学业资料',sectionScope:true,scopedSection:true,ignoreUnmapped:true,
@@ -197,7 +234,7 @@ assert.ok(buildDataBlockPlan('工作经历',[],{internship:[{company:'实习公�
 const distinctRecords={internship:[{company:'实习公司'}],campusPractice:[{position:'班长'}],
   publications:[{title:'论文'}],patents:[{name:'发明专利'}]};
 assert.equal(fieldBindingThreshold({kind:'checkbox',label:'至今',fieldTerms:['至今','目前'],
-  resumeField:'internship[0].endDate.isPresent'}),0.65,'至今复选框的精确标签可直接绑定');
+  resumeField:'internship[0].endDate.isPresent',semanticValue:'是'}),0.65,'明确持续中的日期与至今复选框使用精确绑定门槛');
 assert.equal(fieldBindingThreshold({kind:'checkbox',label:'其他',fieldTerms:['至今'],
   resumeField:'internship[0].endDate.isPresent'}),0.75,'不匹配的复选框保持常规门槛');
 assert.equal(buildDataBlockPlan('实习经历',[],distinctRecords).actions[0].dataBlock,'internship',

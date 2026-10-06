@@ -1,5 +1,5 @@
 // popup.js — 阶段1：简历录入 + 多段经历 + JSON 导入导出 + Key 持久化
-import { CONTENT_SCRIPT_VERSION } from '../lib/content-version.js';
+import { CONTENT_SCRIPT_VERSION, SNAPSHOT_PROTOCOL_VERSION } from '../lib/content-version.js';
 
 const DEFAULT_RESUME_URL = chrome.runtime.getURL('data/resume-default.json');
 
@@ -518,6 +518,10 @@ document.addEventListener('click', async (e) => {
     const progressEl = document.getElementById('fill-progress');
     if (progressEl) { progressEl.textContent = '启动中…'; progressEl.className = 'fill-progress active'; }
     try {
+      const runtime=await chrome.runtime.sendMessage({type:'RUNTIME_STATUS'});
+      if (runtime?.version !== CONTENT_SCRIPT_VERSION || runtime?.protocolVersion !== SNAPSHOT_PROTOCOL_VERSION) {
+        throw new Error('插件版本未同步，请在扩展管理页重载插件');
+      }
       const tab = await getActivePageTab();
       await ensureContentScript(tab.id);
     } catch (err) {
@@ -537,6 +541,7 @@ document.addEventListener('click', async (e) => {
       fillPort.postMessage({ type: 'START' });
     } catch (_) {}
     chrome.runtime.sendMessage({ type: 'START_FILL', resume: state.resume, apiKey: jevApiKey,
+      runtimeVersion: CONTENT_SCRIPT_VERSION,
       agreementConfirmed: document.getElementById('confirm-agreements')?.checked === true }, (resp) => {
       if (chrome.runtime.lastError) {
         appendLog(`启动失败: ${chrome.runtime.lastError.message}`, 'err');
@@ -813,8 +818,8 @@ async function dumpPageStructure() {
     const s = frames.find(frame=>frame.frameId===0)?.structure || frames[0].structure;
     const {fillEvents=[]}=await chrome.storage.session.get(['fillEvents']);
     const events=fillEvents.map(({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,
-      pickerField,options,candidates}) =>
-      ({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,pickerField,options,candidates}));
+      pickerField,options,candidates,runtimeVersion,protocolVersion}) =>
+      ({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,pickerField,options,candidates,runtimeVersion,protocolVersion}));
     const blob = new Blob([JSON.stringify({frames,events}, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

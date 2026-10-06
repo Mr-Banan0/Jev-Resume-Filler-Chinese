@@ -10,10 +10,14 @@ globalThis.fetch=async(_url,args)=>{
   assert.ok(++calls<40,'返回与低置信选择保持有限尝试');
   let chosen,confidence=1;
   if(entries.some(([,action])=>Object.hasOwn(action,'block'))) {
-    chosen=entries.find(([,action])=>action.block===(ctx.section==='联系资料' && phone ? null : 'basics')) ||
+    const reroute=ctx.section==='联系资料' && phone;
+    chosen=entries.find(([,action])=>action.block===(reroute ? 'projects' : 'basics')) ||
       entries.find(([,action])=>action.block===null);
+    if(reroute) confidence=0.5;
   } else if(entries.some(([,action])=>action.source_meaning !== undefined)) {
     if(ctx.section==='返回测试') chosen=entries.find(([,action])=>action.target==='section:return');
+    else if(entries.some(([,action])=>/^\[(?:f\d+_)?4\]/.test(action.target)))
+      chosen=entries.find(([,action])=>action.operation==='RETURN' && action.target!=='section:return');
     else {
       chosen=entries.find(([,action])=>action.resume_field===(ctx.section==='联系资料'?'basics.phone':'basics.name'));
       if(ctx.section==='置信测试') confidence=0.5;
@@ -25,13 +29,14 @@ globalThis.fetch=async(_url,args)=>{
 globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},
   sendMessage:msg=>{if(msg.type==='FILL_DONE') resolveDone(msg);},lastError:null},
   tabs:{query:async()=>[{id:1,title:'简历',url:'https://example.test/exits'}],sendMessage(_id,msg,_opts,reply){
-    if(['PING','CLOSE_TRANSACTIONS'].includes(msg.type)) return reply({ok:true});
+    if(['PING','CLOSE_TRANSACTIONS'].includes(msg.type)) return reply({ok:true,version:'2026-10-07.57'});
     if(msg.type==='FINGERPRINT') return reply({ok:true,fingerprint:String(revision)});
     if(msg.type==='SNAPSHOT_FULL') return reply({ok:true,fingerprint:String(revision),
       page:{title:'简历',url:'https://example.test/exits',text:'返回测试 置信测试 联系资料'},elements:[
         {index:'1',stableKey:'return',section:'返回测试',label:'自定义姓名',kind:'input',value:'',operations:['TYPE_TEXT']},
         {index:'2',stableKey:'uncertain',section:'置信测试',label:'自定义姓名',kind:'input',required:true,value:'',operations:['TYPE_TEXT']},
-        {index:'3',stableKey:'phone',section:'联系资料',label:'手机',kind:'input',value:phone,operations:['TYPE_TEXT']}
+        {index:'3',stableKey:'phone',section:'联系资料',label:'手机',kind:'input',value:phone,operations:['TYPE_TEXT']},
+        {index:'4',stableKey:'remaining',section:'联系资料',label:'联系地址',kind:'input',value:'',operations:['TYPE_TEXT']}
       ].map((el,domOrder)=>({...el,domOrder}))});
     if(msg.type==='EXECUTE') {
       assert.equal(msg.index,'3','返回与低置信的控件保持原值');
@@ -42,12 +47,14 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
   }},scripting:{executeScript:async()=>[{frameId:0}]},storage:{session:{set:async()=>{}}}};
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',apiKey:'synthetic',resume:{basics:{name:'示例姓名',phone:'12345678900'}}},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-07.57',apiKey:'synthetic',resume:{basics:{name:'示例姓名',phone:'12345678900'},projects:[{name:'合成项目',startDate:'2026-09'}]}},{},()=>{});
   const result=await completion;
   assert.equal(phone,'12345678900','离开局部失败后继续其他分区');
   assert.equal(result.done,true);
   assert.equal(result.ok,false,'待核对项目保留在最终报告');
   assert.ok(result.pendingIssues.some(issue=>/置信不足/.test(issue.reason)));
   assert.ok(result.pendingIssues.some(issue=>/返回/.test(issue.reason)));
+  assert.ok(!result.sections.some(section=>section.section==='联系资料' && section.dataBlock==='projects'),
+    '已填写资料块之后的低置信路由直接返回，避免进入另一组重复经历');
 } finally {globalThis.fetch=original.fetch;globalThis.setTimeout=original.setTimeout;console.log=original.log;}
 console.log('Local return and uncertain bindings keep fields untouched, report gaps and continue other sections');

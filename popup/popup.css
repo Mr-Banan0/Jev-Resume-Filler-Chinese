@@ -318,6 +318,9 @@ body {
   flex: 1;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   word-break: break-all;
+  max-height: 72px;
+  overflow-y: auto;
+  min-width: 0;
 }
 
 .fill-progress.active { color: var(--accent); }

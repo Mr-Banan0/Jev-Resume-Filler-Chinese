@@ -92,7 +92,7 @@ assert.ok(page.elements.some(el => el.section === '获奖情况' && /添加/.tes
   '飞书的获奖新增入口即使没有指针样式也应被采集');
 assert.ok(page.elements.some(el => el.section === '自我评价' && /添加/.test(el.label) && el.kind === 'card'),
   '飞书的自我评价新增入口即使没有指针样式也应被采集');
-assert.equal(page.elements.find(el => el.section === '自我评价' && el.kind === 'input')?.label, '自我评价',
+assert.equal(page.elements.find(el => el.section === '自我评价' && el.kind === 'textarea')?.label, '自我评价',
   '飞书自我评价的通用占位文本应回收为分区字段标题');
 assert.equal(page.elements.find(el => el.section === '获奖情况' && el.label === '获奖时间')?.kind, 'feishu-year',
   '飞书单年份获奖时间应识别为专用年份控件，避免打开无候选日历层');

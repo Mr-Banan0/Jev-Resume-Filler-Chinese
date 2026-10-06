@@ -57,7 +57,7 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
   }}};
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',apiKey:'synthetic',resume},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-07.57',apiKey:'synthetic',resume},{},()=>{});
   const result=await done;
   assert.equal(result.ok,true,JSON.stringify(result));
   assert.deepEqual(saved['个人信息'],[{name:resume.basics.name}]);

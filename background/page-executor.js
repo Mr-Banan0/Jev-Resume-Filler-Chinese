@@ -416,7 +416,9 @@ async function commitControlledText(tabId, frameId, index, value, keepFocus = fa
           // 通过当前节点的受控回调提交真实 DOM 值。
           let propsKey='';
           let props=null;
-          for (let node=el,depth=0; invokeManualCallbacks && node && depth<5 && !props; node=node.parentElement,depth+=1) {
+          const directCallbacks=invokeManualCallbacks==='direct';
+          const callbackDepth=directCallbacks ? 1 : 5;
+          for (let node=el,depth=0; invokeManualCallbacks && node && depth<callbackDepth && !props; node=node.parentElement,depth+=1) {
             for (const name of Object.keys(node)) {
               if (name.startsWith('__reactProps$') || name.startsWith('__reactEventHandlers$')) {
                 const candidate=node[name];
@@ -428,7 +430,7 @@ async function commitControlledText(tabId, frameId, index, value, keepFocus = fa
               }
               if (name.startsWith('__reactFiber$') || name === '_reactInternalFiber') {
                 let fiber=node[name];
-                for (let level=0; fiber && level<5; fiber=fiber.return,level+=1) {
+                for (let level=0; fiber && level<callbackDepth; fiber=fiber.return,level+=1) {
                   const candidate=fiber.memoizedProps || fiber.pendingProps;
                   if (typeof candidate?.onChange === 'function' || typeof candidate?.onInput === 'function') {
                     propsKey=name;
@@ -447,8 +449,10 @@ async function commitControlledText(tabId, frameId, index, value, keepFocus = fa
             isDefaultPrevented(){return this.defaultPrevented;},isPropagationStopped(){return false;}
           };
           // 当前节点保存的 React 回调是表单状态的提交入口。
-          if (typeof props?.onChange === 'function') props.onChange(synthetic);
-          if (typeof props?.onInput === 'function') props.onInput({...synthetic,type:'input'});
+          const alreadyCommitted=directCallbacks && Object.hasOwn(props || {},'value') &&
+            String(props.value ?? '')===String(el.value || '');
+          if (!alreadyCommitted && typeof props?.onChange === 'function') props.onChange(synthetic);
+          if (!alreadyCommitted && typeof props?.onInput === 'function') props.onInput({...synthetic,type:'input'});
           el.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true,key}));
           // 搜索型 combobox 需要保持焦点，候选层才会留在 DOM 中供下一轮选择。
           // 普通文本框继续触发 blur，让站点完成校验与受控状态提交。
@@ -459,9 +463,13 @@ async function commitControlledText(tabId, frameId, index, value, keepFocus = fa
           }
           await new Promise(resolve=>setTimeout(resolve,80));
           const actual=String(el.value || '');
-          return {ok:actual === nextValue,action:'type_text',value:actual,verified:actual === nextValue,
+          const decimal=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+          const numericControl=el.type==='number' || el.inputMode==='decimal';
+          const verified=actual===nextValue || numericControl && decimal.test(actual) && decimal.test(nextValue) &&
+            Number.isFinite(Number(actual)) && Number(actual)===Number(nextValue);
+          return {ok:verified,action:'type_text',value:actual,verified,
             bridge:inserted ? 'exec-command' : propsKey ? 'react-props' : 'native-events',
-            reason:actual === nextValue ? undefined : `页面主环境回读不一致：${actual || '空白'}`};
+            reason:verified ? undefined : `页面主环境回读不一致：${actual || '空白'}`};
         } finally {
           el.removeAttribute('data-jev-fill-target');
         }
@@ -493,7 +501,7 @@ async function commitControlledText(tabId, frameId, index, value, keepFocus = fa
     else if (operation === 'TYPE_TEXT' && targetEntry?.kind === 'feishu-date-range') result = await selectFeishuRangeFromPicker(tabId,frameId,local,execMsg.value);
     else if (operation === 'PICK_DATE' && targetEntry?.clickMode === 'trusted-pointer') result = await pickDateWithTrustedPointer(tabId,frameId,local,execMsg.value);
     else if (operation === 'TYPE_TEXT' && (targetEntry?.textCommitMode === 'page-world' || moka || keepSearchOpen)) result = await commitControlledText(tabId,frameId,local,execMsg.value,
-      (moka && targetEntry?.kind === 'combobox') || keepSearchOpen,targetEntry?.textCommitMode !== 'page-world');
+      (moka && targetEntry?.kind === 'combobox') || keepSearchOpen,targetEntry?.textCommitMode === 'page-world' ? 'direct' : true);
     else if (operation === 'CLICK') result = await executePageClick(tabId,frameId,local,targetEntry?.clickMode === 'trusted-pointer');
     else result = await sendToFrame(tabId,frameId,execMsg);
     if (beisenChoice && !result?.ok && /找不到北森单选图标|目标不属于北森常量选择器/.test(result?.reason || '')) result = await sendToFrame(tabId,frameId,execMsg);

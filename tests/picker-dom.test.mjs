@@ -76,4 +76,43 @@ w.document.body.innerHTML='<input placeholder="背景姓名"><div role="dialog">
 snap=await send({type:'SNAPSHOT_REQUEST'});
 assert.ok(!snap.elements.some(e=>e.label==='背景姓名'));
 assert.ok(snap.elements.some(e=>e.label==='请输入专业名称'&&e.context==='popup'));
-console.log('✓ 完整年份列、隐藏单选、点击生成输入框、全屏搜索隔离、后台焦点通过');
+w.document.body.innerHTML='<h2>项目经历</h2><div><div><input id="present" type="checkbox" style="opacity:0"><span> </span></div><span>至今</span></div>';
+const skin=w.document.querySelector('#present + span');
+let componentChecked=false;
+skin.addEventListener('click',()=>{
+  componentChecked=!componentChecked;
+  w.document.getElementById('present').checked=componentChecked;
+  skin.setAttribute('aria-checked',String(componentChecked));
+});
+snap=await send({type:'SNAPSHOT_REQUEST'});
+const present=snap.elements.find(e=>e.label==='至今');
+assert.ok(present?.viaProxy,'紧邻文字的单一隐藏勾选框可以回读并执行');
+assert.equal(present.checked,false);
+assert.equal((await send({type:'EXECUTE',action:'click',index:present.index})).ok,true);
+assert.equal(w.document.getElementById('present').checked,true);
+assert.equal(componentChecked,true,'可见表面的事件更新组件状态，保证可暂存');
+w.document.body.innerHTML='<h2>项目经历</h2><div><input id="unhandled" type="checkbox" style="opacity:0"><span>至今</span></div>';
+snap=await send({type:'SNAPSHOT_REQUEST'});
+const unhandled=snap.elements.find(e=>e.label==='至今');
+assert.equal((await send({type:'EXECUTE',action:'click',index:unhandled.index})).ok,false,'未触发组件事件时记录失败');
+assert.equal(w.document.getElementById('unhandled').checked,false,'隐藏状态保持真实，避免产生假阳性勾选');
+w.document.body.innerHTML='<h2>项目经历</h2><div class="phoenix-checkbox"><span class="phoenix-checkbox__realInput"><input id="skin-state" type="checkbox" style="opacity:0"><span class="phoenix-checkbox__box"></span></span><span>至今</span></div>';
+const checkboxSkin=w.document.querySelector('.phoenix-checkbox__realInput');
+checkboxSkin.addEventListener('click',()=>checkboxSkin.classList.toggle('phoenix-checkbox__realInput--checked'));
+snap=await send({type:'SNAPSHOT_REQUEST'});
+const styledPresent=snap.elements.find(e=>e.label==='至今');
+assert.equal(styledPresent.checked,false);
+assert.equal((await send({type:'EXECUTE',action:'click',index:styledPresent.index})).ok,true);
+assert.equal(w.document.getElementById('skin-state').checked,false,'组件隐藏 input 可保持未勾选');
+assert.equal((await send({type:'SNAPSHOT_REQUEST'})).elements.find(e=>e.label==='至今').checked,true,
+  '后续扫描使用网站可见皮肤状态，避免反复切换');
+w.document.body.innerHTML='<h2>实习经历</h2><div class="phoenix-checkbox"><span class="phoenix-checkbox__realInput"></span><span class="phoenix-checkbox__box"><input id="sibling-state" type="checkbox" style="opacity:0"></span><span>至今</span></div>';
+const siblingSkin=w.document.querySelector('.phoenix-checkbox__realInput');
+siblingSkin.addEventListener('click',()=>siblingSkin.classList.toggle('phoenix-checkbox__realInput--checked'));
+snap=await send({type:'SNAPSHOT_REQUEST'});
+const siblingPresent=snap.elements.find(e=>e.label==='至今');
+assert.equal((await send({type:'EXECUTE',action:'click',index:siblingPresent.index})).ok,true);
+assert.equal(w.document.getElementById('sibling-state').checked,false);
+assert.equal((await send({type:'SNAPSHOT_REQUEST'})).elements.find(e=>e.label==='至今').checked,true,
+  '皮肤和原生 input 位于并列容器时回读同一选择组件');
+console.log('✓ 完整年份列、隐藏选择代理、全屏搜索隔离与后台焦点通过');

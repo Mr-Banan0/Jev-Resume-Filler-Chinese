@@ -16,7 +16,7 @@ globalThis.chrome={
   tabs:{query:async()=>[{id:1,title:'校园招聘',url:'https://example.test/resume/index.html'}],
     sendMessage(_id,msg,opts,reply){
       const frameId=opts.frameId;
-      if(msg.type==='PING') return reply({ok:true});
+      if(msg.type==='PING') return reply({ok:true,version:'2026-10-07.57'});
       const fingerprint=frameId===0?'outer-static':JSON.stringify(values);
       if(msg.type==='FINGERPRINT') return reply({ok:true,fingerprint});
       if(msg.type==='SNAPSHOT_FULL') return reply({ok:true,fingerprint,
@@ -37,7 +37,7 @@ globalThis.chrome={
 };
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',apiKey:'test-key',resume:{basics:{name:'测试姓名',email:'test@example.test',phone:'12345678900'}}},
+  listener({type:'START_FILL',runtimeVersion:'2026-10-07.57',apiKey:'test-key',resume:{basics:{name:'测试姓名',email:'test@example.test',phone:'12345678900'}}},
     {},()=>{});
   const result=await done;
   assert.equal(result.ok,true,result.reason);

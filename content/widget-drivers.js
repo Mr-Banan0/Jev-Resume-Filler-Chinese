@@ -45,8 +45,7 @@
     // 前方的展示节点。先读取展示值，避免把空 input 当成“尚未填写”，从而
     // 让后续的年、月或相邻字段抢走当前选择事务。
     if (/(^|\.)mokahr\.com$/i.test(hostname) && ['virtual-select', 'autocomplete'].includes(family)) {
-      const mokaValue = readMokaSelectedValue(el, { tidy, label });
-      if (mokaValue) return mokaValue;
+      return readMokaSelectedValue(el, { tidy, label });
     }
     if (isEditable(el)) return editableText(el).slice(0, 200);
     if (['virtual-select','autocomplete'].includes(family) && el.closest?.('.ud__select')) {
@@ -70,17 +69,6 @@
     }
     if (el.matches?.('input,textarea')) {
       if (el.value) return el.value;
-      const selectedDate = readAdjacentMokaDate(el, { family, hostname, tidy });
-      if (selectedDate) return selectedDate;
-      if (/(^|\.)mokahr\.com$/i.test(hostname) && ['virtual-select', 'autocomplete'].includes(family)) {
-        let node = el.parentElement;
-        for (let depth = 0; node && depth < 2; depth += 1, node = node.parentElement) {
-          const text = tidy(node.innerText || node.textContent || '');
-          const captionOnly = normalize(text).replace(/\*/g,'') === normalize(label).replace(/\*/g,'');
-          if (text && !captionOnly && text !== tidy(el.getAttribute('placeholder') || '') &&
-              !/^(?:请选择|请输入|必填项未填写)/.test(text) && text.length <= 60) return text;
-        }
-      }
       return '';
     }
     if (['virtual-select', 'autocomplete'].includes(family) || el.getAttribute?.('role') === 'combobox') {
@@ -108,9 +96,11 @@
     }
     const selectedDate = readAdjacentMokaDate(input, { family: 'virtual-select', hostname: 'mokahr.com', tidy });
     if (selectedDate) return selectedDate;
+    if(input.value) return input.value;
     // 少数租户用同级节点的父容器承载展示值，保留为回退并剥离标题、占位和错误。
     for (let node = input.parentElement; node && node !== input.parentElement?.parentElement?.parentElement;
       node = node.parentElement) {
+      if(node.querySelectorAll('input').length>1) break;
       let value = clean(node.innerText || node.textContent || '');
       value = value.replace(placeholder, '').replace(tidy(label || ''), '').trim();
       if (value && !/^(?:请选择|请输入)$/.test(value) && value.length <= 60) return value;

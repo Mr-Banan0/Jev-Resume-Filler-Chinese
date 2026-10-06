@@ -40,15 +40,21 @@ const run = async (name, fn) => {
   }
 };
 
+await run('运行版本可回读，旧弹窗启动时保留页面', async () => {
+  const runtime=await ask({type:'RUNTIME_STATUS'});
+  const rejected=await ask({type:'START_FILL',runtimeVersion:'old',resume:{},apiKey:'synthetic'});
+  return runtime.version==='2026-10-07.57' && runtime.protocolVersion===2 && rejected.started===false;
+});
+
 await run('START_FILL 立即回执 started=true', async () => {
   pushed.length = 0;
-  const resp = await ask({ type: 'START_FILL', goal: '', resume: null, apiKey: '' });
+  const resp = await ask({ type: 'START_FILL',runtimeVersion:'2026-10-07.57', goal: '', resume: null, apiKey: '' });
   return resp && resp.started === true;
 });
 
 await run('缺 API Key 时也要推 FILL_DONE，不能无声无息', async () => {
   pushed.length = 0;
-  await ask({ type: 'START_FILL', goal: '', resume: { basics: {} }, apiKey: '' });
+  await ask({ type: 'START_FILL',runtimeVersion:'2026-10-07.57', goal: '', resume: { basics: {} }, apiKey: '' });
   await new Promise((r) => setTimeout(r, 10));
   const done = pushed.find((m) => m.type === 'FILL_DONE');
   return done && done.ok === false && /API Key/.test(done.reason || '');
@@ -56,7 +62,7 @@ await run('缺 API Key 时也要推 FILL_DONE，不能无声无息', async () =>
 
 await run('缺简历时推 FILL_DONE', async () => {
   pushed.length = 0;
-  await ask({ type: 'START_FILL', goal: '', resume: null, apiKey: 'k' });
+  await ask({ type: 'START_FILL',runtimeVersion:'2026-10-07.57', goal: '', resume: null, apiKey: 'k' });
   await new Promise((r) => setTimeout(r, 10));
   const done = pushed.find((m) => m.type === 'FILL_DONE');
   return done && /简历/.test(done.reason || '');

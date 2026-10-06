@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 let listener, email='', revision=1, complete, clicks=0;
+const deterministicDate=process.argv.includes('--deterministic-date');
 const completion=new Promise(resolve=>complete=resolve);
 const timer=globalThis.setTimeout, log=console.log;
 globalThis.setTimeout=fn=>{queueMicrotask(fn);return 0;};
@@ -9,13 +10,15 @@ globalThis.chrome={
   runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},
     sendMessage:m=>{if(m.type==='FILL_DONE') complete(m);},lastError:null},
   tabs:{query:async()=>[{id:1,title:'个人信息',url:'https://example.test/form'}],sendMessage(_id,m,_opts,reply){
-    if(m.type==='PING'||m.type==='CLOSE_TRANSACTIONS') return reply({ok:true});
+    if(m.type==='PING'||m.type==='CLOSE_TRANSACTIONS') return reply({ok:true,version:'2026-10-07.57'});
     if(m.type==='FINGERPRINT') return reply({ok:true,fingerprint:String(revision)});
     if(m.type==='SNAPSHOT_FULL') return reply({ok:true,fingerprint:String(revision),page:{title:'个人信息',url:'https://example.test/form',text:'个人信息'},elements:[
-      {index:'1',kind:'date',label:'出生日期',value:'',operations:['CLICK']},
+      {index:'1',kind:deterministicDate ? 'beisen-date' : 'date',label:'出生日期',value:'',
+        datePrecision:'day',operations:deterministicDate ? ['PICK_DATE'] : ['CLICK']},
       {index:'2',kind:'input',label:'邮箱',value:email,operations:['TYPE_TEXT']}
     ]});
     if(m.type==='EXECUTE') {
+      if(m.action==='pick_date') {clicks++;return reply({ok:false,reason:'合成日期导航失败'});}
       if(m.action==='type_text'){email=m.value;revision++;} else clicks++;
       return reply({ok:true});
     }
@@ -24,10 +27,11 @@ globalThis.chrome={
 };
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',apiKey:'synthetic-key',resume:{basics:{birthDate:'2001-02-10',email:'test@example.com'}}},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-07.57',apiKey:'synthetic-key',resume:{basics:{birthDate:'2001-02-10',email:'test@example.com'}}},{},()=>{});
   const result=await completion;
   assert.equal(email,'test@example.com',JSON.stringify(result));
   assert.ok(clicks<=4,'字段重试有界');
+  if(deterministicDate) assert.equal(clicks,1,'日期事务失败后立即隔离并继续其他字段');
   assert.ok(result.pendingIssues?.length,'失败字段保留待补证据');
 } finally {globalThis.setTimeout=timer;console.log=log;}
 console.log('Field failure is isolated; remaining input filled and pending issue retained');

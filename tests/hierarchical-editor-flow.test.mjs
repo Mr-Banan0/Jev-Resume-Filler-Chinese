@@ -27,7 +27,7 @@ globalThis.fetch=async(_url,args)=>{
 globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},
   sendMessage:msg=>{if(msg.type==='FILL_DONE') resolveDone(msg);},lastError:null},
   tabs:{query:async()=>[{id:1,title:'学业资料',url:'https://example.test/editor'}],sendMessage(_id,msg,_opts,reply){
-    if(['PING','CLOSE_TRANSACTIONS'].includes(msg.type)) return reply({ok:true});
+    if(['PING','CLOSE_TRANSACTIONS'].includes(msg.type)) return reply({ok:true,version:'2026-10-07.57'});
     if(msg.type==='FINGERPRINT') return reply({ok:true,fingerprint:String(revision)});
     if(msg.type==='SNAPSHOT_FULL') {
       const section='学业资料';
@@ -56,7 +56,7 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
   }},scripting:{executeScript:async()=>[{frameId:0}]},storage:{session:{set:async()=>{}}}};
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',apiKey:'synthetic',resume},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-07.57',apiKey:'synthetic',resume},{},()=>{});
   const result=await completion;
   if(failedSave || unrelatedSummary) {
     assert.equal(result.ok,false);

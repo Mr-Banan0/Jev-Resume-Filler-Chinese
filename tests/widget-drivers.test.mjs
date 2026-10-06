@@ -23,6 +23,13 @@ const readDate = el => drivers.readValue(el, {
   tidy:value => value.trim(), editableText:el => el.textContent, isEditable:() => false
 });
 assert.equal(readDate(dateWrapper.querySelector('input')), '2026');
+const compound = window.document.createElement('div');
+compound.innerHTML='<div><span>2024</span><input placeholder="年"><span></span></div><div><input placeholder="月"><span></span></div>';
+window.document.body.append(compound);
+assert.equal(readDate(compound.querySelector('[placeholder=月]')), '', '空月份的箭头或相邻年份不构成已填写值');
+assert.equal(readDate(compound.querySelector('[placeholder=年]')), '2024');
+compound.querySelector('[placeholder=月]').insertAdjacentHTML('beforebegin','<span>8</span>');
+assert.equal(readDate(compound.querySelector('[placeholder=月]')), '8');
 assert.equal(readDate(dateWrapper.querySelector('.select')), '2026');
 dateWrapper.querySelector('input').removeAttribute('placeholder');
 assert.equal(readDate(dateWrapper.querySelector('input')), '2026');

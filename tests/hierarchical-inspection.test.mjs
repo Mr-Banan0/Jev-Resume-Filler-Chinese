@@ -33,7 +33,7 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
   onInstalled:{addListener(){}},sendMessage:msg=>{if(msg.type==='FILL_DONE')resolveDone(msg);},lastError:null},
   tabs:{query:async()=>[{id:1,title:'简历编辑',url:'https://example.test/form'}],
     sendMessage(_id,msg,_opts,reply){
-      if(msg.type==='PING')return reply({ok:true});
+      if(msg.type==='PING') return reply({ok:true,version:'2026-10-07.57'});
       if(msg.type==='FINGERPRINT')return reply({ok:true,fingerprint:String(revision)});
       if(msg.type==='CLOSE_TRANSACTIONS'){opened=false;return reply({ok:true});}
       if(msg.type==='SNAPSHOT_FULL')return reply({ok:true,elements:elements(),fingerprint:String(revision),
@@ -47,7 +47,7 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
     }},scripting:{executeScript:async()=>[{frameId:0}]},storage:{session:{set:async()=>{}}}};
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',apiKey:'synthetic',resume},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-07.57',apiKey:'synthetic',resume},{},()=>{});
   const result=await completion;
   assert.equal(result.ok,true,JSON.stringify(result));
   assert.equal(value,'统招全日制');assert.equal(inspections,1);

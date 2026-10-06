@@ -85,7 +85,7 @@
         if (!lastAnchorElement || field !== lastAnchorElement) recordIndex += 1;
         lastAnchorElement = field;
       }
-      if (recordIndex >= 0) item.entry.recordIndex = recordIndex;
+      if (recordIndex >= 0 && !item.entry.recordStableKey) item.entry.recordIndex = recordIndex;
     }
   }
 
@@ -121,7 +121,8 @@
       const nearbyTitle = nearestBeisenFieldTitle(stateEl);
       if (entry.kind === 'file') {
         const fileContext = beisenFileContext(stateEl);
-        entry.section = /(?:简历附件|上传简历|个人简历|resume)/i.test(`${label} ${nearbyTitle} ${fileContext}`) ? '简历附件' : '附件';
+        if (/(?:简历附件|上传简历|个人简历|resume)/i.test(`${label} ${nearbyTitle} ${fileContext}`)) entry.section = '简历附件';
+        else if (!entry.section) entry.section='附件';
       } else if (/^\d+\/\d+$/.test(label) && nearbyTitle) {
         entry.label = nearbyTitle;
       }

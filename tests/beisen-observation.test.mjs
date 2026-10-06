@@ -136,11 +136,26 @@ const regionControl=regionSnapshot.elements.find(el=>el.label==='籍贯' && el.k
 assert.ok(regionControl,'籍贯选择器应识别为可点击字段');
 await new Promise(resolve=>listeners[0]({type:'EXECUTE',action:'click',index:regionControl.index},{},resolve));
 assert.equal(regionOpens,1,'点击籍贯输入区时应命中北森选择器容器');
+ethnicOptions.remove();
 const areaPopup=window.document.createElement('div');
 areaPopup.className='area-selector-container';
 areaPopup.innerHTML='<div class="area-item">浙江省</div><div class="area-item">杭州市</div><button>确定</button>';
 window.document.body.append(areaPopup);
+window.document.elementFromPoint=()=>areaPopup;
 const areaSnapshot=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
 assert.ok(areaSnapshot.elements.some(el=>el.context==='popup' && el.label==='浙江省'),
   '地区弹层省份应成为局部候选');
+window.document.body.innerHTML='<div class="form-item"><div class="form-item__title">民族</div><div class="phoenix-select"><input readonly></div></div>';
+const ethnicTrigger=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
+await new Promise(resolve=>listeners[0]({type:'EXECUTE',action:'click',index:ethnicTrigger.elements.find(e=>e.label==='民族').index},{},resolve));
+const compoundSelector=window.document.createElement('div');
+compoundSelector.className='constant-main-selector-container';
+compoundSelector.style.position='absolute';
+compoundSelector.innerHTML='<input placeholder="搜索"><div><div class="list-item-container"><span>汉族</span></div><div class="list-item-container"><span>回族</span></div></div><div><button>取消</button><button>确定</button></div>';
+window.document.body.append(compoundSelector);
+window.document.elementFromPoint=()=>compoundSelector;
+const compoundSnapshot=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
+assert.ok(compoundSnapshot.elements.some(e=>e.context==='popup' && e.label==='汉族'));
+assert.ok(compoundSnapshot.elements.some(e=>e.context==='popup' && e.label==='确定'),
+  '复合选择器的完整表面同时保留选项和确认，避免反复切换同一选项');
 console.log('beisen observation tests passed');

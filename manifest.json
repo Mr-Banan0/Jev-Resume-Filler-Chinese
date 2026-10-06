@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jev Resume Filler",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "基于 TypeSafe Jev 决策模型的网申简历自动填写扩展",
   "action": {
     "default_popup": "popup/popup.html",

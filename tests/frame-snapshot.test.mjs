@@ -47,7 +47,7 @@ globalThis.chrome = {
     sendMessage: (tabId, msg, opts, cb) => {
       if (typeof opts === 'function') { cb = opts; opts = {}; }
       const frameId = (opts && opts.frameId) || 0;
-      if (msg.type === 'PING') return cb({ ok: true });
+      if (msg.type === 'PING') return cb({ ok: true,version:'2026-10-07.57' });
       if (msg.type === 'SNAPSHOT_FULL') return cb(FRAME_DATA[frameId] || { ok: false, reason: 'no frame' });
       if (msg.type === 'EXECUTE' || msg.type === 'SCROLL') {
         execCalls.push({ frameId, msg: JSON.stringify(msg) });
