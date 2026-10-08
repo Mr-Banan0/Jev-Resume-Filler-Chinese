@@ -1,12 +1,14 @@
 {
   "name": "jev-resume-filler",
-  "version": "0.5.4",
+  "version": "0.5.6",
   "private": true,
   "description": "基于 TypeSafe Jev 决策模型的 Chrome 网申简历自动填写扩展",
   "type": "module",
   "scripts": {
     "test:families": "node tests/modern-control-families.test.mjs && node tests/controlled-number.test.mjs && node tests/hierarchical-inspection.test.mjs && node tests/beisen-themed-form.test.mjs && node tests/beisen-month-grid.test.mjs && node tests/field-failure-isolation.test.mjs --deterministic-date",
-    "pretest": "npm run test:families",
+    "pretest": "npm run test:families && npm run test:observed",
+    "test:observed": "node tests/observed-interaction.test.mjs && node tests/observed-dom.test.mjs && node tests/observed-flow.test.mjs && node tests/observed-flow.test.mjs --failure",
+    "test:observed:live": "node tests/observed-flow.test.mjs --live",
     "test:hierarchy": "node tests/hierarchical-context.test.mjs && node tests/hierarchical-flow.test.mjs && node tests/hierarchical-flow.test.mjs --former-honor-host && node tests/hierarchical-editor-flow.test.mjs && node tests/hierarchical-editor-flow.test.mjs --route && node tests/hierarchical-exit-flow.test.mjs",
     "test:interaction": "node tests/interaction.test.mjs && node tests/interaction-semantics.test.mjs",
     "test": "npm run test:hierarchy && node tests/schema-contract.test.mjs && node tests/interaction.test.mjs && node tests/widget-drivers.test.mjs && node tests/frame-snapshot.test.mjs && node tests/iframe-fingerprint.test.mjs && node tests/layui-date.test.mjs && node tests/iter-site.test.mjs && node tests/content-dom.test.mjs && node tests/field-groups.test.mjs && node tests/repeater-section.test.mjs && node tests/todo-list.test.mjs && node tests/midea-regression.test.mjs && node tests/ey-form.test.mjs && node tests/fixture-extract.test.mjs && node tests/card-weak-signal.test.mjs && node tests/questions.test.mjs && node tests/progress-plumbing.test.mjs && node tests/picker-transactions.test.mjs && node tests/picker-dom.test.mjs && node tests/section-planner.test.mjs && node tests/page-state.test.mjs && node tests/beisen-observation.test.mjs && node tests/beisen-platform.test.mjs && node tests/feishu-jobs.test.mjs && node tests/zhaopin-section-entry.test.mjs && npm run test:architecture",

@@ -1,5 +1,6 @@
 // popup.js — 阶段1：简历录入 + 多段经历 + JSON 导入导出 + Key 持久化
 import { CONTENT_SCRIPT_VERSION, SNAPSHOT_PROTOCOL_VERSION } from '../lib/content-version.js';
+import { resolveInteractionPolicy } from '../lib/interaction-policy.js';
 
 const DEFAULT_RESUME_URL = chrome.runtime.getURL('data/resume-default.json');
 
@@ -542,6 +543,7 @@ document.addEventListener('click', async (e) => {
     } catch (_) {}
     chrome.runtime.sendMessage({ type: 'START_FILL', resume: state.resume, apiKey: jevApiKey,
       runtimeVersion: CONTENT_SCRIPT_VERSION,
+      interactionPolicy:resolveInteractionPolicy(document.getElementById('interaction-policy')?.value),
       agreementConfirmed: document.getElementById('confirm-agreements')?.checked === true }, (resp) => {
       if (chrome.runtime.lastError) {
         appendLog(`启动失败: ${chrome.runtime.lastError.message}`, 'err');
@@ -818,8 +820,8 @@ async function dumpPageStructure() {
     const s = frames.find(frame=>frame.frameId===0)?.structure || frames[0].structure;
     const {fillEvents=[]}=await chrome.storage.session.get(['fillEvents']);
     const events=fillEvents.map(({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,
-      pickerField,options,candidates,runtimeVersion,protocolVersion}) =>
-      ({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,pickerField,options,candidates,runtimeVersion,protocolVersion}));
+      pickerField,options,candidates,runtimeVersion,protocolVersion,interactionPolicy,observation}) =>
+      ({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,pickerField,options,candidates,runtimeVersion,protocolVersion,interactionPolicy,observation}));
     const blob = new Blob([JSON.stringify({frames,events}, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -946,9 +948,16 @@ async function refreshStatus() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  document.querySelector('.version').textContent=`v${chrome.runtime.getManifest().version}`;
   appendLog('Popup 已加载', 'info');
   try {
-    const stored = await chrome.storage.local.get(['resume', 'jevApiKey']);
+    const stored = await chrome.storage.local.get(['resume', 'jevApiKey','interactionPolicy']);
+    const policySelect=document.getElementById('interaction-policy');
+    policySelect.value=resolveInteractionPolicy(stored.interactionPolicy);
+    policySelect.addEventListener('change',async()=>{
+      await chrome.storage.local.set({interactionPolicy:policySelect.value});
+      appendLog(`字段策略：${policySelect.value==='observed' ? '通用观察' : '原适配对照'}`,'info');
+    });
     if (stored.resume) {
       state.resume = stored.resume;
     } else {

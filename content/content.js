@@ -3,7 +3,7 @@
 
 (function () {
   // Popup 在扩展重载后用此版本识别遗留页面中的旧 content script，并主动替换。
-  const CONTENT_SCRIPT_VERSION = '2026-10-07.57';
+  const CONTENT_SCRIPT_VERSION = '2026-10-08.59';
   const previousContentVersion = globalThis.__jevResumeFillerContentVersion;
   if (previousContentVersion && previousContentVersion !== CONTENT_SCRIPT_VERSION) {
     // Chrome 重载扩展时会保留页面隔离世界。释放旧实例的注册标记，让新代码
@@ -43,6 +43,7 @@
   // 快照记录少量执行策略，例如飞书可视卡片需要完整指针序列。该元数据只在
   // 当前快照到下一次执行之间有效，页面重扫后会随注册表一起刷新。
   let elementMetaRegistry = [];
+  let observationCoverage = {};
   const observedMonthControls = new WeakSet();
   let transactionTrigger = null;
   let activeLayer = null;
@@ -1782,6 +1783,32 @@
         value: stateEl?.closest?.('.apply-form-date-now')?.querySelector('.apply-form-date-now__ipt input')?.value === '至今' ? '至今' : opts.value,
         operations: opts.operations
       };
+      const readonly=stateEl?.readOnly===true || stateEl?.getAttribute?.('aria-readonly')==='true';
+      const capabilities=[...new Set((opts.operations || []).flatMap(operation=>
+        operation==='PICK_DATE' ? ['CLICK'] : [operation]))];
+      if(readonly) {
+        const typing=capabilities.indexOf('TYPE_TEXT');
+        if(typing>=0) capabilities.splice(typing,1);
+        if(!capabilities.includes('CLICK')) capabilities.push('CLICK');
+      }
+      let scrollableAncestor=null;
+      for(let node=targetEl?.parentElement;node && node!==document.body;node=node.parentElement) {
+        if(node.scrollHeight>node.clientHeight+2 && /auto|scroll/.test(window.getComputedStyle(node).overflowY)) {
+          scrollableAncestor={nodeKey:nodeId(node),top:node.scrollTop,height:node.clientHeight,total:node.scrollHeight};
+          break;
+        }
+      }
+      const labelIds=(stateEl?.getAttribute?.('aria-labelledby') || '').split(/\s+/).filter(Boolean);
+      const labels=Array.from(stateEl?.labels || []).map(label=>tidyLabel(label.textContent || '')).filter(Boolean);
+      entry.observed={tag:stateEl?.tagName?.toLowerCase() || '',type:stateEl?.getAttribute?.('type') || '',
+        rawValue:typeof stateEl?.value==='string' ? stateEl.value : null,
+        displayText:tidyLabel(stateEl?.textContent || '').slice(0,400),
+        ariaRole:stateEl?.getAttribute?.('role') || '',ariaLabel:stateEl?.getAttribute?.('aria-label') || '',
+        labels,labelledBy:labelIds.map(id=>tidyLabel(stateEl.getRootNode()?.getElementById?.(id)?.textContent || '')).filter(Boolean),
+        previousText:tidyLabel(stateEl?.previousElementSibling?.textContent || '').slice(0,180),
+        readonly,disabled:stateEl?.disabled===true || targetEl?.getAttribute?.('aria-disabled')==='true',
+        expanded:stateEl?.getAttribute?.('aria-expanded') ?? null,
+        controls:stateEl?.getAttribute?.('aria-controls') || '',scrollableAncestor,capabilities};
       const dateInput = stateEl?.matches?.('input') ? stateEl : stateEl?.querySelector?.('input');
       const datePlaceholder = tidyLabel(dateInput?.getAttribute?.('placeholder') || '');
       if (kind === 'date' && (String(dateInput?.getAttribute?.('type') || '').toLowerCase() === 'month' ||
@@ -1919,11 +1946,14 @@
       if (stateEl?.closest?.('.layui-layer-btn') && /^(确定|保存)$/.test(tidyLabel(stateEl.textContent))) entry.recordCommit = true;
 
       if (stateEl && role === "combobox" && stateEl.tagName === "SELECT") {
-        entry.options = Array.from(stateEl.options).slice(0, 30).map((opt, i) => ({
+        entry.optionCount=stateEl.options.length;
+        entry.options = Array.from(stateEl.options).slice(0, 245).map((opt, i) => ({
           index: `${entry.index}:${i + 1}`,
           label: opt.text,
-          value: opt.value
+          value: opt.value,
+          disabled:opt.disabled || opt.parentElement?.disabled===true
         }));
+        entry.optionsComplete=entry.options.length===entry.optionCount;
       }
       (opts.offscreen ? offView : inView).push({ stateEl, targetEl, entry });
     }
@@ -2183,6 +2213,13 @@
     const ordered = popupEntries.length
       ? [...popupEntries.slice(0, popupBudget), ...normalEntries.slice(0, normalBudget)].slice(0, MAX_ELEMENTS)
       : allEntries.slice(0, MAX_ELEMENTS);
+    const retained=new Set(ordered);
+    const omitted=allEntries.filter(item=>!retained.has(item));
+    observationCoverage={collected:allEntries.length,returned:ordered.length,
+      omittedPopup:omitted.filter(item=>item.entry.context==='popup').length,
+      omittedBySection:omitted.filter(item=>item.entry.context!=='popup').reduce((counts,item)=>{
+        const section=item.entry.section || '当前表单';counts[section]=(counts[section] || 0)+1;return counts;
+      },{}),complete:omitted.length===0};
     const out = [];
     for (const { stateEl, targetEl, entry } of ordered) {
       entry.index = String(out.length + 1);
@@ -3901,6 +3938,7 @@
             version:CONTENT_SCRIPT_VERSION,
             protocolVersion:2,
             count: table.length,
+            observationCoverage,
             elements: table,
             preview: table.slice(0, 5),
             filters: {
@@ -4020,6 +4058,20 @@
               else if (action === "type_text") res = await executeTypeText(index, value);
               else if (action === "upload_file") res = await executeUploadFile(index, msg.file);
               else if (action === "select") res = await executeSelect(target);
+              else if (action === 'scroll') {
+                const el=elementRegistry[parseInt(index,10)-1];
+                let node=el?.parentElement;
+                while(node && node!==document.body && !(node.scrollHeight>node.clientHeight+2 &&
+                  /auto|scroll/.test(window.getComputedStyle(node).overflowY))) node=node.parentElement;
+                if(!node || node===document.body) res={ok:false,reason:'当前选项没有可滚动的弹层容器'};
+                else {
+                  const before=node.scrollTop;
+                  node.scrollTop=Math.max(0,Math.min(node.scrollHeight-node.clientHeight,
+                    before+(msg.direction==='up' ? -1 : 1)*Math.max(40,node.clientHeight*.8)));
+                  res={ok:node.scrollTop!==before,action:'scroll',verified:node.scrollTop!==before,
+                    reason:node.scrollTop===before ? '当前滚动方向已到边界' : undefined};
+                }
+              }
               else res = { ok: false, reason: `unknown action ${action}` };
               sendResponse(res);
             } catch (err) {

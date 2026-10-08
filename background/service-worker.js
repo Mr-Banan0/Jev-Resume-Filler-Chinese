@@ -6,6 +6,8 @@ import { CONTENT_SCRIPT_VERSION, SNAPSHOT_PROTOCOL_VERSION } from "../lib/conten
 import { classifyPageState } from "../lib/page-state.js";
 import { createPageExecutor } from './page-executor.js';
 import { addedRecordEvidence, createRunMemory, dateDependencyCandidates, observeDateDefaults, frameOf, recordLedgerKey, recordOutcome, savedRecordEvidence, scopeControls } from '../lib/traversal-state.js';
+import {buildObservedActionPlan,normalizeObservedControls} from '../lib/observed-interaction.js';
+import {DEFAULT_INTERACTION_POLICY,OBSERVED_POLICY,resolveInteractionPolicy} from '../lib/interaction-policy.js';
 
 console.log("[Jev Resume Filler] Service Worker 启动");
 
@@ -102,7 +104,7 @@ async function listFrameIds(tabId) {
 }
 
 // 汇总所有 frame 的可交互控件；元素索引加 frame 前缀，执行时按前缀路由回对应 frame
-async function snapshotAllFrames(tabId) {
+async function snapshotAllFrames(tabId,interactionPolicy=DEFAULT_INTERACTION_POLICY) {
   const frameIds = await listFrameIds(tabId);
   const elements = [];
   const texts = [];
@@ -111,6 +113,7 @@ async function snapshotAllFrames(tabId) {
   let topDiagnostics = null;
   let framesWithElements = 0;
   const frameFingerprints = [];
+  const observationCoverage=[];
   // 各帧的过滤计数累加后再报给弹窗，否则"明明 DOM 里有却采集不到"没法定位
   const filters = { hidden: 0, zeroSize: 0, popupItems: 0 };
   // 有几个 frame 真正回话了：全部没回话说明 content script 没生效，
@@ -120,7 +123,11 @@ async function snapshotAllFrames(tabId) {
   for (const frameId of frameIds) {
     const snap = await sendToFrame(tabId, frameId, { type: "SNAPSHOT_FULL" });
     frameFingerprints.push([frameId, snap?.ok ? snap.fingerprint || 'missing' : 'missing']);
-    if (!snap || !snap.ok || !Array.isArray(snap.elements)) continue;
+    if (!snap || !snap.ok || !Array.isArray(snap.elements)) {
+      observationCoverage.push({frameId,unavailable:true});
+      continue;
+    }
+    if(snap.observationCoverage) observationCoverage.push({frameId,...snap.observationCoverage});
     respondedFrames += 1;
     framePages.push({frameId,...snap.page});
     if (frameId === 0) {
@@ -170,8 +177,8 @@ async function snapshotAllFrames(tabId) {
 
   return {
     count: elements.length,
-    elements,
-    page: pageInfo,
+    elements:interactionPolicy===OBSERVED_POLICY ? normalizeObservedControls(elements) : elements,
+    page: {...pageInfo,observationCoverage},
     frames: frameIds.length,
     framesWithElements,
     respondedFrames,
@@ -253,7 +260,7 @@ function describeEmpty(snap) {
 
 async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, isCurrentRun = () => true,
   initialRecordIndex = 0, scopeSection, dataBlock, fieldBindings = [], recordBindings = {}, recordEditor = false,
-  runMemory, recordKey }) {
+  runMemory, recordKey,interactionPolicy=DEFAULT_INTERACTION_POLICY }) {
   const history = [...(runMemory.historyByRecord.get(recordKey) || []),...fieldBindings.map(binding=>({...binding,kind:'bind'}))];
   if (recordKey) runMemory.historyByRecord.set(recordKey, history);
   let step = 0;
@@ -271,7 +278,7 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     const {frameId} = parseFrameTarget(decision.sourceTarget || decision.target);
     await closePageTransactions(tabId,frameId);
     history.push({kind:'cancel',cancelField:deferredKey,skipControlKey:decision.controlStableKey,
-      recordIndex:initialRecordIndex,reason,action:'DEFER_FIELD',page_changed:true});
+      recordIndex:initialRecordIndex,reason,reasonKind:'execution-gap',action:'DEFER_FIELD',page_changed:true});
     pendingIssues.push({field:decision.fieldLabel || decision.label || decision.resumeField,reason});
     onProgress({step,phase:'blocked',action:`${decision.fieldLabel || decision.label} 暂列待补，继续当前记录的其他字段：${reason}`});
     consecutiveSkips = 0;
@@ -289,7 +296,7 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     onProgress({ step, phase: "snapshot" });
 
     // 1. 取快照（汇总所有 frame）
-    const snap = await snapshotAllFrames(tabId);
+    const snap = await snapshotAllFrames(tabId,interactionPolicy);
     if(pendingDateDependencies.length) {
       history.push(...observeDateDefaults(pendingDateDependencies,snap.elements));
       pendingDateDependencies=[];
@@ -357,7 +364,13 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     });
 
     // 2. 在选定资料块内生成字段绑定与执行候选，逐次回读当前记录。
-    const actionPlan = buildActionPlan(snap.elements, resume, history, {...snap.page,recordIndex,allowAddRecords:false});
+    const planner=interactionPolicy===OBSERVED_POLICY ? buildObservedActionPlan : buildActionPlan;
+    const actionPlan = planner(snap.elements, resume, history, {...snap.page,recordIndex,allowAddRecords:false});
+    if(actionPlan.policy===OBSERVED_POLICY) onProgress({step,phase:'observation',interactionPolicy,
+      observation:{phase:actionPlan.observation.phase,field:actionPlan.observation.active_field,
+        controls:snap.elements.length,offered:actionPlan.actions.length,coverageComplete:actionPlan.observation.coverage_complete,
+        candidatesComplete:actionPlan.observation.candidates_complete,candidateCoverage:actionPlan.observation.candidate_coverage},
+      action:`通用观察：${actionPlan.observation.phase}；${snap.elements.length} 个控件，${actionPlan.actions.length} 个动作候选`});
     if(actionPlan.summary?.recordConflict) return {ok:false,terminal:true,recordConflict:true,
       reason:actionPlan.summary.recordConflict,history,pendingIssues:[...pendingIssues,
         {field:'记录身份',reason:actionPlan.summary.recordConflict}]};
@@ -398,6 +411,10 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
         }
       }
       const { mappedControls, satisfiedControls } = actionPlan.summary;
+      if(actionPlan.policy===OBSERVED_POLICY && !actionPlan.observation.coverage_complete) {
+        return {ok:false,terminal:true,reason:'观察范围不完整，保留当前记录待继续扫描',step,history,
+          pendingIssues:[...pendingIssues,{field:scopeSection,reason:'快照被截断或有不可访问的 frame，完成状态待核验'}]};
+      }
       if (actionPlan.status === "done") {
         onProgress({
           step,
@@ -456,6 +473,20 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     });
 
     const { operation, target, resumeField } = decision;
+    if(operation==='FOCUS_FIELD') {
+      history.push({kind:'focus',controlStableKey:decision.controlStableKey,label:decision.label,
+        initialValue:snap.elements.find(control=>control.index===target)?.value || '',page_changed:false});
+      continue;
+    }
+    if(operation==='WAIT' && decision.observed) {
+      history.push({kind:'wait',controlStableKey:decision.controlStableKey,resumeField,label:decision.label,page_changed:false});
+      await sleep(WAIT_MS_SUGGEST);
+      continue;
+    }
+    if(decision.observed && decision.context==='popup' && ['CLICK','SELECT'].includes(operation) &&
+      decision.confidence<0.75) {
+      if(await deferField(decision,'选项语义置信不足，保留待核对')) continue;
+    }
     if (operation === 'BIND_FIELD' || operation === 'SKIP_FIELD') {
       const key=decision.controlStableKey || target;
       const bindingControl=snap.elements.find(el=>(el.stableKey || el.index)===key);
@@ -488,8 +519,9 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
           if (!closed?.ok) onProgress({step,phase:'failed',action:`${decision.label} 退出选择器失败：${closed?.reason || '未回读'}`});
         }
         history.push({kind:'skip',skipControlKey:decision.controlStableKey || target,label:decision.label,
+          reasonKind:operation==='BIND_FIELD' ? 'recognition-gap' : 'missing-data',
           reason:operation==='BIND_FIELD' ? '字段绑定置信不足，保留待核对' : '当前资料块无对应字段，保留待核对',page_changed:false});
-        if(recordEditor || operation==='BIND_FIELD' || bindingControl?.required) pendingIssues.push({field:decision.label,
+        if(recordEditor || operation==='BIND_FIELD' || bindingControl?.required || decision.observed) pendingIssues.push({field:decision.label,
           reason:operation==='BIND_FIELD' ? '字段绑定置信不足，保留待核对' : '当前记录无匹配字段，需核对或补充资料'});
         onProgress({step,phase:'skip',action:`${decision.label} 在当前资料块中暂未匹配，继续检查其余字段`});
       }
@@ -505,7 +537,8 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
         await sendToFrame(tabId,frameId,{type:'EXECUTE',action:'click',index:local});
       if (returned?.ok) {
         pendingIssues.push({field:decision.fieldLabel || resumeField,reason:decision.reason});
-        history.push({kind:'cancel',cancelField:resumeField,action:'RETURN',page_changed:true});
+        history.push({kind:'cancel',cancelField:resumeField,skipControlKey:decision.skipControlKey,
+          reason:decision.reason,reasonKind:decision.reasonKind,action:'RETURN',page_changed:true});
         await sleep(WAIT_MS_OVERLAY);
         continue;
       }
@@ -605,6 +638,9 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     } else if (operation === "SELECT") {
       execMsg = { type: "EXECUTE", action: "select", target: local };
       actionLabel = `select[${target}]`;
+    } else if(operation==='SCROLL') {
+      execMsg={type:'EXECUTE',action:'scroll',index:local,direction:decision.direction};
+      actionLabel=`scroll[${target}]${decision.direction}`;
     } else if (operation === "PICK_DATE") {
       const value = getResumeValue(resume, resumeField);
       const dateValue = /^\d{4}-\d{2}$/.test(String(value || '')) ? `${value}-01` : String(value || '');
@@ -688,7 +724,7 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     let pageChanged = true;
     if (snap.fingerprint) {
       const afterFingerprint = await pageFingerprint(tabId);
-      pageChanged = !afterFingerprint || afterFingerprint !== snap.fingerprint;
+      pageChanged = operation==='SCROLL' ? execRes.verified===true : !afterFingerprint || afterFingerprint !== snap.fingerprint;
     }
     history.push({
       action: actionLabel,
@@ -708,6 +744,8 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
       ,controlStableKey: decision.controlStableKey || clickedEl?.stableKey || null
       ,verified: execRes.verified === true
       ,pickerStep: decision.pickerStep,
+      selectedLabel:decision.observed && decision.context==='popup' ? decision.label : undefined,
+      semanticChoiceConfidence:decision.observed ? decision.confidence : undefined,
       pickerLeaf: decision.pickerLeaf
     });
     consecutiveSkips = 0;
@@ -814,7 +852,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // section 动作中选择；选中后才把该 section 的控件交给记录事务。这样不同 section
 // 的重复字段（例如多个“年”“学校名称”）永远不会出现在同一次字段决策里。
-async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun}) {
+async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun,interactionPolicy=DEFAULT_INTERACTION_POLICY}) {
   const ledger = {};
   const runMemory = createRunMemory();
   const sections = [];
@@ -841,7 +879,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
     }
   };
   const auditRequiredFields = async () => {
-    const current = await snapshotAllFrames(tabId);
+    const current = await snapshotAllFrames(tabId,interactionPolicy);
     const plansBySection = new Map();
     const planForSection = section => {
       const key = section || '';
@@ -851,11 +889,18 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
         // 验收沿 Jev 实际选定的资料块与持久绑定回读，保持分区边界。
         const blocks=[...new Set([state.activeBlock,...(state.completedBlocks || []),
           ...(state.blockedBlocks || []),...Object.keys(state.bindingsByBlock || {})].filter(Boolean))];
-        const plans=blocks.map(dataBlock=>buildActionPlan(controls,resume,[],{
-          ...current.page,title:key,dataBlock,fieldBindings:state.bindingsByBlock?.[dataBlock] || [],
-          recordBindings:state.recordBindingsByBlock?.[dataBlock] || {},
-          allowAddRecords:false,scopedSection:true,ignoreUnmapped:true
-        }));
+        const plans=blocks.flatMap(dataBlock=>{
+          const records=Array.isArray(resume[dataBlock]) ? resume[dataBlock] : [resume[dataBlock]];
+          if(interactionPolicy===OBSERVED_POLICY && dataBlock!=='siteRules') return records.map((_,recordIndex)=>
+            buildObservedActionPlan(controls,resume,runMemory.historyByRecord.get(recordLedgerKey(key,dataBlock,resume,recordIndex)) || [],{
+              ...current.page,title:key,dataBlock,recordIndex,recordScope:true,
+              recordBindings:state.recordBindingsByBlock?.[dataBlock] || {},
+              allowAddRecords:false,scopedSection:true,ignoreUnmapped:true}));
+          return [buildActionPlan(controls,resume,[],{
+            ...current.page,title:key,dataBlock,fieldBindings:state.bindingsByBlock?.[dataBlock] || [],
+            recordBindings:state.recordBindingsByBlock?.[dataBlock] || {},
+            allowAddRecords:false,scopedSection:true,ignoreUnmapped:true})];
+        });
         plansBySection.set(key,{summary:{fieldGroups:plans.flatMap(plan=>plan.summary?.fieldGroups || [])}});
       }
       return plansBySection.get(key);
@@ -935,7 +980,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
   let staleDecisions = 0;
   for (let turn = 1; turn <= 160; turn += 1) {
     if (!isCurrentRun()) return {ok:false,cancelled:true,reason:'已停止填写',sections,pendingIssues};
-    const snap = await snapshotAllFrames(tabId);
+    const snap = await snapshotAllFrames(tabId,interactionPolicy);
     const currentPageState = classifyPageState(snap.page, snap.elements);
     if (currentPageState.kind === 'auth-required' || currentPageState.kind === 'unsaved-confirmation') {
       addPendingIssue('页面状态',currentPageState.reason);
@@ -1026,7 +1071,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       const targetEntry=snap.elements.find(el=>el.index===decision.target);
       const moved=await executePageClick(tabId,frameId,local,targetEntry?.clickMode==='trusted-pointer');
       await sleep(WAIT_MS_SECTION);
-      const after=await snapshotAllFrames(tabId);
+      const after=await snapshotAllFrames(tabId,interactionPolicy);
       if (!moved?.ok || after.fingerprint===snap.fingerprint || after.elements.some(el=>el.validationError)) {
         addPendingIssue('页面导航','下一页未获页面变化或校验确认');
         return finish('当前页面保留待处理，已停止页面导航');
@@ -1058,7 +1103,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       const executed = await executePageClick(tabId,frameId,local,
         targetEntry?.clickMode === 'trusted-pointer');
       await sleep(WAIT_MS_SECTION);
-      const after = await snapshotAllFrames(tabId);
+      const after = await snapshotAllFrames(tabId,interactionPolicy);
       const editorRemains = after.page.activeSection === decision.section && after.elements.some(el =>
         el.section === decision.section && el.context !== 'popup' &&
         /^(取消|返回)$/.test(String(el.label || '').replace(/\s/g,'')) && el.operations?.includes('CLICK'));
@@ -1114,7 +1159,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
         }
         report({step:turn,phase:'execute',action:`${decision.operation === 'ADD_RECORD' ? '新增' : '进入'}「${decision.section || decision.label}」`});
         await sleep(WAIT_MS_SECTION);
-        const current = await snapshotAllFrames(tabId);
+        const current = await snapshotAllFrames(tabId,interactionPolicy);
         if (decision.operation === 'FOCUS_SECTION' &&
             current.page?.activeSection !== decision.section && current.fingerprint === snap.fingerprint) {
           ledger[`${decision.section}|*`] = {...ledger[`${decision.section}|*`],focusBlocked:true,status:'进入分区后页面未变化'};
@@ -1155,7 +1200,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       continue;
     }
     if (decision.operation !== 'WORK_SECTION' || !decision.section) continue;
-    const before = await snapshotAllFrames(tabId);
+    const before = await snapshotAllFrames(tabId,interactionPolicy);
     const scopedControls = scopeControls(before.elements,{section:decision.section,editorFrames:before.page.editorFrames,
       editorSurfaceId:before.page.editorSurfaceId});
     const activeBlock=ledger[`${decision.section}|*`]?.activeBlock;
@@ -1171,7 +1216,8 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
     const key = recordLedgerKey(decision.section,activeBlock,resume,decision.recordIndex || 0);
     report({step:turn,phase:'section',action:`专注填写「${decision.section}」；已隔离 ${scopedControls.length} 个控件`});
     const result = await runRecordTransaction({goal,resume,apiKey,tabId,onProgress:report,isCurrentRun,scopeSection:decision.section,
-      dataBlock:activeBlock,fieldBindings,recordBindings,recordEditor,initialRecordIndex:decision.recordIndex ?? 0,runMemory,recordKey:key});
+      dataBlock:activeBlock,fieldBindings,recordBindings,recordEditor,initialRecordIndex:decision.recordIndex ?? 0,
+      runMemory,recordKey:key,interactionPolicy});
     if (result.cancelled) return {ok:false,cancelled:true,reason:'已停止填写',sections,pendingIssues};
     const sectionKey=`${decision.section}|*`;
     const sectionState=ledger[sectionKey] || {};
@@ -1186,7 +1232,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       for (const frameId of new Set(scopedControls.map(frameOf))) await closePageTransactions(tabId,frameId);
       await sleep(WAIT_MS_OVERLAY);
     }
-    const afterWork = await snapshotAllFrames(tabId);
+    const afterWork = await snapshotAllFrames(tabId,interactionPolicy);
     const source=resume[activeBlock];
     const record=Array.isArray(source) ? source[decision.recordIndex || 0] : source;
     const savedRecord = result.sectionSaved && savedRecordEvidence(afterWork.elements,
@@ -1201,7 +1247,8 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       !(planBefore.summary?.unresolvedMapped || []).length);
     const afterControls=scopeControls(afterWork.elements,{section:decision.section,editorFrames:afterWork.page.editorFrames,
       editorSurfaceId:afterWork.page.editorSurfaceId});
-    const afterPlan=buildActionPlan(afterControls,resume,result.history || [],{
+    const afterPlanner=interactionPolicy===OBSERVED_POLICY ? buildObservedActionPlan : buildActionPlan;
+    const afterPlan=afterPlanner(afterControls,resume,result.history || [],{
       ...afterWork.page,title:decision.section,dataBlock:activeBlock,recordIndex:decision.recordIndex || 0,
       scopedSection:true,ignoreUnmapped:true,recordScope:true,recordBindings,recordEditor:!!afterWork.page.editorSurface,allowAddRecords:false
     });
@@ -1282,6 +1329,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
 
 async function runFill(msg) {
   const { resume:sourceResume, apiKey } = msg;
+  const interactionPolicy=resolveInteractionPolicy(msg.interactionPolicy);
   agreementConfirmedForRun = msg.agreementConfirmed === true;
   const goal = DEFAULT_GOAL;
   const resume = prepareResume(sourceResume);
@@ -1334,6 +1382,7 @@ async function runFill(msg) {
     phase: "start",
     runtimeVersion: CONTENT_SCRIPT_VERSION,
     protocolVersion: SNAPSHOT_PROTOCOL_VERSION,
+    interactionPolicy,
     action: `已接管页面「${tab.title || '无标题'}」${tab.url ? ' ' + tab.url : ''}，开始读取控件`
   });
 
@@ -1345,7 +1394,7 @@ async function runFill(msg) {
     ]});
     return;
   }
-  const result=await runSectionScheduler({tabId:tab.id,resume,apiKey,goal,report,isCurrentRun});
+  const result=await runSectionScheduler({tabId:tab.id,resume,apiKey,goal,report,isCurrentRun,interactionPolicy});
 
   if (isCurrentRun()) pushToPopup({ type: "FILL_DONE", ...result });
 }

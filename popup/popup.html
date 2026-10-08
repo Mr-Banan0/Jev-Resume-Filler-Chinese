@@ -9,7 +9,7 @@
 <body>
   <header class="header">
     <h1 class="title">Jev Resume Filler</h1>
-    <span class="version">v0.5.4</span>
+    <span class="version"></span>
   </header>
 
   <nav class="tabs" role="tablist">
@@ -272,6 +272,15 @@
         <input type="password" id="jev-api-key" placeholder="apikey_xxx" />
       </label>
       <button class="btn" id="btn-save-key">保存 Key</button>
+
+      <label class="field">
+        <span class="field-label">字段填写策略</span>
+        <select id="interaction-policy">
+          <option value="observed" selected>通用观察策略（默认）</option>
+          <option value="adapted">原适配策略（对照）</option>
+        </select>
+      </label>
+      <p class="hint">默认由 Jev 选择当前记录的空字段与 JSON 来源，再逐步操作下拉和日期。平台驱动继续保留；两种策略共享分区与记录调度。</p>
 
       <hr class="divider" />
 

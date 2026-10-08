@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>通用观察实验 · 合成简历表单</title>
+<style>
+body{font:16px system-ui;margin:40px auto;max-width:760px;color:#182230}label{display:block;margin:14px 0 6px}
+input,textarea,button{font:inherit;padding:9px;border:1px solid #cbd5e1;border-radius:5px}textarea{width:90%}
+.experience-item{border:1px solid #e2e8f0;padding:18px;margin:12px 0}[role=listbox]{position:fixed;inset:20% 20% auto;background:white;border:2px solid #64748b;padding:20px;z-index:99}
+[role=listbox] button{margin:5px}p{color:#64748b}
+</style>
+<h1>合成资料测试页</h1><p>用于对比字段策略。全部数据为测试示例，按钮不会发起投递。</p>
+<form onsubmit="return false">
+<h2>个人信息</h2><label for="existing">姓名</label><input id="existing" value="已有测试姓名">
+<label for="referral">内推码</label><input id="referral" value="KEEP-TEST-CODE">
+<h2>教育经历</h2><div id="education"></div><button type="button" id="add">添加教育经历</button>
+<h2>语言能力</h2><div data-record-id="language" class="experience-item">
+<label for="certificate">语言证书名称</label><button type="button" id="certificate" role="combobox">请选择</button>
+<label for="score">分数</label><input id="score" type="number" step="0.5"></div>
+<button type="button" id="submit">提交简历</button>
+</form>
+<script>
+window.testTrace=[];
+let rowCount=0;
+function closePopup(){document.querySelector('[role=listbox]')?.remove();}
+function openOptions(root,labels,onSelect){
+  closePopup();
+  const popup=document.createElement('div');popup.role='listbox';popup.id='test-popup';
+  root.setAttribute('aria-controls',popup.id);
+  for(const label of labels){
+    const button=document.createElement('button');button.type='button';button.role='option';button.textContent=label;
+    button.onclick=()=>{window.testTrace.push({field:root.id,option:label});onSelect(label);};popup.append(button);
+  }
+  document.body.append(popup);
+}
+function addEducation(){
+  const i=rowCount++;
+  const row=document.createElement('div');row.className='experience-item';row.dataset.recordId=`education-${i}`;
+  row.innerHTML=`<label for="school-${i}">学校名称</label><input id="school-${i}">
+    <label for="mode-${i}">课程修读方式</label><button type="button" id="mode-${i}" role="combobox">请选择</button>
+    <label for="date-${i}">结束时间</label><input id="date-${i}" readonly aria-haspopup="dialog" placeholder="请选择结束时间">
+    <label for="focus-${i}">学术主题摘要</label><textarea id="focus-${i}"></textarea>`;
+  document.getElementById('education').append(row);
+  const mode=document.getElementById(`mode-${i}`),date=document.getElementById(`date-${i}`);
+  mode.onclick=()=>openOptions(mode,['Part-time','Full-time'],label=>{mode.textContent=label;closePopup();});
+  date.onclick=()=>openOptions(date,['2025年','2026年'],yearLabel=>{
+    const year=yearLabel.slice(0,4);date.value=`${year}-01-01`;
+    openOptions(date,['6月','11月'],monthLabel=>{
+      const month=monthLabel.replace('月','').padStart(2,'0');date.value=`${year}-${month}-01`;
+      openOptions(date,['1日','15日','30日'],dayLabel=>{
+        date.value=`${year}-${month}-${dayLabel.replace('日','').padStart(2,'0')}`;closePopup();
+      });
+    });
+  });
+}
+document.getElementById('add').onclick=()=>{addEducation();window.testTrace.push({added:true});};
+const certificate=document.getElementById('certificate');
+certificate.onclick=()=>openOptions(certificate,['TOEFL（托福）','IELTS（雅思）'],label=>{certificate.textContent=label;closePopup();});
+document.getElementById('submit').onclick=()=>window.testTrace.push({submitted:true});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')closePopup();});
+addEducation();
+</script>
+</html>
