@@ -14,8 +14,8 @@ const resume = {
   basics:{name:'示例姓名'},
   education:[{institution:'示例大学'}],
   awards:[],
-  patents:[{name:'声景预测方法',number:'ZL 2023 1 1763103.9'}],
-  publications:[{title:'Decoding urban soundscapes'}]
+  patents:[{name:'合成专利名称',number:'SYNTHETIC-PATENT-001'}],
+  publications:[{title:'Synthetic publication title'}]
 };
 
 const todo = buildTodoList([
