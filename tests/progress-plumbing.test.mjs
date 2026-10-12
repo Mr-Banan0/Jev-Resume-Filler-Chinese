@@ -43,18 +43,18 @@ const run = async (name, fn) => {
 await run('运行版本可回读，旧弹窗启动时保留页面', async () => {
   const runtime=await ask({type:'RUNTIME_STATUS'});
   const rejected=await ask({type:'START_FILL',runtimeVersion:'old',resume:{},apiKey:'synthetic'});
-  return runtime.version==='2026-10-08.59' && runtime.protocolVersion===2 && rejected.started===false;
+  return runtime.version==='2026-10-11.4' && runtime.protocolVersion===2 && rejected.started===false;
 });
 
 await run('START_FILL 立即回执 started=true', async () => {
   pushed.length = 0;
-  const resp = await ask({ type: 'START_FILL',runtimeVersion:'2026-10-08.59', goal: '', resume: null, apiKey: '' });
+  const resp = await ask({ type: 'START_FILL',runtimeVersion:'2026-10-11.4', goal: '', resume: null, apiKey: '' });
   return resp && resp.started === true;
 });
 
 await run('缺 API Key 时也要推 FILL_DONE，不能无声无息', async () => {
   pushed.length = 0;
-  await ask({ type: 'START_FILL',runtimeVersion:'2026-10-08.59', goal: '', resume: { basics: {} }, apiKey: '' });
+  await ask({ type: 'START_FILL',runtimeVersion:'2026-10-11.4', goal: '', resume: { basics: {} }, apiKey: '' });
   await new Promise((r) => setTimeout(r, 10));
   const done = pushed.find((m) => m.type === 'FILL_DONE');
   return done && done.ok === false && /API Key/.test(done.reason || '');
@@ -62,7 +62,7 @@ await run('缺 API Key 时也要推 FILL_DONE，不能无声无息', async () =>
 
 await run('缺简历时推 FILL_DONE', async () => {
   pushed.length = 0;
-  await ask({ type: 'START_FILL',runtimeVersion:'2026-10-08.59', goal: '', resume: null, apiKey: 'k' });
+  await ask({ type: 'START_FILL',runtimeVersion:'2026-10-11.4', goal: '', resume: null, apiKey: 'k' });
   await new Promise((r) => setTimeout(r, 10));
   const done = pushed.find((m) => m.type === 'FILL_DONE');
   return done && /简历/.test(done.reason || '');
@@ -73,6 +73,22 @@ await run('保活连接被接住（防止 SW 中途被挂起）', async () => {
   const listeners = [];
   connectHandler({ name: 'fill-keepalive', onMessage: { addListener: (f) => listeners.push(f) }, onDisconnect: { addListener: () => {} } });
   return true;
+});
+
+await run('连接测试通过同一服务入口，仅传合成资料并隔离个人简历', async () => {
+  const originalFetch=globalThis.fetch;
+  let body;
+  try {
+    globalThis.fetch=async(url,args)=>{
+      if(url!=='https://api.quickrouter.ai/v1/systemone') throw Error('服务配置错误');
+      body=JSON.parse(args.body);
+      return {ok:true,json:async()=>({model:'jev-1.13.0',answers:{connection:{type:'choice',choice:'software',confidence:1,
+        probabilities:{software:1,accounting:0,none:0}}}})};
+    };
+    const result=await ask({type:'TEST_JEV_CONNECTION',apiProvider:'quickrouter',apiKey:'synthetic',
+      resume:{basics:{name:'PRIVATE_MARKER'}}});
+    return result.ok===true && body.model==='jev-1.13.0' && !JSON.stringify(body).includes('PRIVATE_MARKER');
+  } finally {globalThis.fetch=originalFetch;}
 });
 
 await run('未知消息类型不抢答', async () => {

@@ -3,6 +3,11 @@ import {readFileSync} from 'node:fs';
 import {JSDOM} from 'jsdom';
 import {buildActionPlan} from '../lib/jev-client.js';
 import {createRunMemory,matchRecordSources,recordLedgerKey,recordOutcome,savedRecordEvidence,scopeControls,sourceRecordId} from '../lib/traversal-state.js';
+assert.equal(savedRecordEvidence([{section:'论文',summaryText:'Short title 2026-06'}],{
+  section:'论文',record:{title:'A long complete title',titleShort:'Short title',date:'2026-06'}}),true,
+  '已提供的短标题与日期共同支持保存摘要回读，来源记录身份保持原始标题');
+assert.equal(savedRecordEvidence([{section:'论文',summaryText:'Short title 2025-06'}],{
+  section:'论文',record:{title:'A long complete title',titleShort:'Short title',date:'2026-06'}}),false);
 
 const records=[{company:'同名公司',startDate:'2025-01-01',endDate:'2025-06-01',position:'开发实习生'},
   {company:'同名公司',startDate:'2026-01-01',endDate:'2026-06-01',position:'开发实习生'}];
@@ -76,6 +81,14 @@ assert.equal(savedRecordEvidence([{section:'实习经历',summaryText:'同名公
   {section:'实习经历',record:records[0]}),false,'完整日期出现时逐日核验');
 assert.equal(savedRecordEvidence([{section:'实习经历',summaryText:'同名公司 2025年1月 2025年6月'}],
   {section:'实习经历',record:records[0]}),true,'年月显示按页面实际精度核验');
+assert.equal(savedRecordEvidence([{section:'论文',summaryText:'Short title 2026.06.01'}],
+  {section:'论文',record:{title:'Complete long title',titleShort:'Short title',date:'2026-06'}}),true,
+  '年月来源按一号约定填入完整日期后，保存摘要识别为同一记录');
+assert.equal(savedRecordEvidence([{section:'论文',summaryText:'Short title 2026.07.01'}],
+  {section:'论文',record:{title:'Complete long title',titleShort:'Short title',date:'2026-06'}}),false);
+assert.equal(savedRecordEvidence([{section:'项目',summaryText:'合成项目 2026.09.01 2026.11.30'}],
+  {section:'项目',record:{name:'合成项目',startDate:'2026-09',endDate:'至今',endDateFallback:'2026-11-30'}}),true,
+  '至今的已授权替代日期进入保存回读证据');
 const memory=createRunMemory();
 memory.attempts.set('same-field',3);
 assert.equal(memory.attempts.get('same-field'),3,'字段执行器共享调度器创建的预算对象');

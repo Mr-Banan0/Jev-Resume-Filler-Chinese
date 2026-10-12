@@ -1,13 +1,14 @@
 {
   "name": "jev-resume-filler",
-  "version": "0.5.6",
+  "version": "0.5.8",
   "private": true,
   "description": "基于 TypeSafe Jev 决策模型的 Chrome 网申简历自动填写扩展",
   "type": "module",
   "scripts": {
     "test:families": "node tests/modern-control-families.test.mjs && node tests/controlled-number.test.mjs && node tests/hierarchical-inspection.test.mjs && node tests/beisen-themed-form.test.mjs && node tests/beisen-month-grid.test.mjs && node tests/field-failure-isolation.test.mjs --deterministic-date",
-    "pretest": "npm run test:families && npm run test:observed",
-    "test:observed": "node tests/observed-interaction.test.mjs && node tests/observed-dom.test.mjs && node tests/observed-flow.test.mjs && node tests/observed-flow.test.mjs --failure",
+    "pretest": "npm run test:api && npm run test:families && npm run test:observed && node tests/record-identity.test.mjs && node tests/context-budget.test.mjs && node tests/transaction-boundary.test.mjs",
+    "test:api": "node tests/jev-api.test.mjs && node tests/jev-settings.test.mjs && node tests/jev-verification.test.mjs && node tests/observed-flow.test.mjs --quickrouter",
+    "test:observed": "node tests/physical-hierarchy.test.mjs && node tests/observed-custom-modules.test.mjs && node tests/goal-observation.test.mjs && node tests/goal-save.test.mjs && node tests/goal-monotonic.test.mjs && node tests/observed-binding.test.mjs && node tests/observed-interaction.test.mjs && node tests/observed-dom.test.mjs && node tests/observed-rollback.test.mjs && node tests/observed-flow.test.mjs && node tests/observed-flow.test.mjs --failure && node tests/observed-flow.test.mjs --close-failure",
     "test:observed:live": "node tests/observed-flow.test.mjs --live",
     "test:hierarchy": "node tests/hierarchical-context.test.mjs && node tests/hierarchical-flow.test.mjs && node tests/hierarchical-flow.test.mjs --former-honor-host && node tests/hierarchical-editor-flow.test.mjs && node tests/hierarchical-editor-flow.test.mjs --route && node tests/hierarchical-exit-flow.test.mjs",
     "test:interaction": "node tests/interaction.test.mjs && node tests/interaction-semantics.test.mjs",

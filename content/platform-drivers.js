@@ -169,11 +169,11 @@
     const sectionAliases = { '基本信息':'个人信息', '基础信息':'个人信息', '附件简历':'简历附件', '获奖':'获奖情况' };
     for (const { entry, stateEl } of items) {
       if (sectionAliases[entry.section]) entry.section = sectionAliases[entry.section];
-      const label = clean(entry.label || entry.placeholder);
+      const label = clean(entry.kind==='observed-field' ? entry.value || entry.observed?.displayText || entry.label : entry.label || entry.placeholder);
       // Structured Formily captions and range slots are resolved by the shared
       // observer; this adapter preserves that field identity through selection.
-      const title = stateEl?.closest?.('.ud-formily-item') ? entry.label : nearestFeishuFieldTitle(stateEl);
-      const wasCard = entry.kind === 'card';
+      const title = entry.questionLabel || (stateEl?.closest?.('.ud-formily-item') ? entry.label : nearestFeishuFieldTitle(stateEl));
+      const wasCard = entry.kind === 'card' || entry.kind === 'observed-field';
       // 飞书的可见交互层常是一个无 ARIA 语义的卡片，实际页面依赖完整的
       // 浏览器层面的真实指针点击来打开下拉或新增一条记录。把执行方式保留在
       // 快照元数据中，调度层仍只看到统一的点击动作。

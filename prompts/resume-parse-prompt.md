@@ -17,12 +17,14 @@
 3. 字段值不确定 → 留空字符串 `""` 或空数组 `[]`，**不要猜测**。
 4. 数组字段（`education` / `campusPractice` / `internship` / `work` / `projects` / `publications` / `skills` / `languages` / `certificates` / `awards` / `patents` / `family` / `training`）按简历内容逐段展开，每段一个对象。
 5. **实习与正式工作分开**：`internship[]` 放实习经历，`work[]` 放正式工作经历。判断依据：经历里出现"实习"字样、或职位含"实习生 / Intern" → 归入 `internship[]`；否则归入 `work[]`。同一段经历只进一个数组，不重复。国内网申常把实习和工作分两个区填写，分开放置才能对上。
-6. **教育经历逐段展开**：本科 / 硕士研究生 / 博士研究生 / MBA 等各为 `education[]` 里独立一段，`studyType` 填 `本科` / `硕士` / `博士` / `MBA` 等。研究生段尽量补 `lab`（实验室/课题组）、`advisor`（导师）、`thesis`（毕设/论文方向）；本科段没写就留空。
+6. **教育经历逐段展开**：按实际求学经历将高中、中专、大专、本科、硕士和博士等分别写入 `education[]`，以 `studyType` 表示学历阶段。`studyMode` 表示学习方式，`degree` 表示具体学位名称；招生方式、学习方式和院校所在地分别依据明确资料填写。研究生段补充已提供的 `lab`（实验室/课题组）、`advisor`（导师）、`thesis`（毕设/论文方向）。各阶段缺失的专业、学位等信息分组向用户确认，保留已有年月精度。
 7. **技能带熟练度**：`skills[N].items` 每项是 `{"skill": "...", "level": "..."}`。level 只取 `入门` / `了解` / `熟悉` / `熟练` / `精通` 之一；简历没标熟练度 → level 留空字符串 `""`，不要编造。
 8. `expected.acceptRelocation` 取 `"是"` / `"否"` / `"可商量"` 之一；简历没提就留空。
 9. `expected.startDate` 取 `"随时"` / `"一周内"` / `"两周内"` / `"一个月内"` / `"三个月内"` / `"面议"` 之一；简历没提就留空。
 10. `application` 仅记录用户确认过的申请资料：紧急联系人、招聘信息来源与面试站点。内推码不写入 JSON。
-11. 实习或工作仍在进行时，填写 `isPresent: true`；网站要求结束日期而用户只提供“至今”时，由用户确认替代日期。
+11. 实习或工作仍在进行时，填写 `isPresent: true`；用户确认网站缺少“至今”选项时使用的替代日期后，将其记录为 `endDateFallback`，保留原始 `endDate`。项目经历使用同一规则。
+12. `fillPolicy.sitePolicies` 记录用户明确要求按网站跳过的分区或问题：`host` 为域名，`excludedSections` 为分区名称数组，`excludedQuestions` 为问题名称数组。仅记录用户确认的偏好，默认使用空数组。
+13. 用户明确要求修正网页已有值时，可在对应站点的 `corrections` 数组中记录 `{"question":"网页问题名称","sourceField":"basics.字段名"}`；源字段保存用户确认的值。每项修正限定一个问题，其余已有内容继续保留。
 
 ## 中文简历常见表述 → JSON 字段映射
 
@@ -56,7 +58,9 @@
 | 是否接受异地 / 能否接受异地 / 是否接受调动 | `expected.acceptRelocation` |
 | 学校 / 毕业院校 | `education[N].institution` |
 | 专业 | `education[N].area` |
-| 学历 / 学位 | `education[N].studyType` |
+| 学历阶段（高中 / 本科 / 硕士等） | `education[N].studyType` |
+| 学位名称 | `education[N].degree` |
+| 学习方式（全日制 / 非全日制等） | `education[N].studyMode` |
 | GPA / 绩点 | `education[N].gpa` |
 | 主修课程 / 核心课程 | `education[N].courses` |
 | 在校经历 / 学生工作 / 社团经历 | `education[N].schoolExperience` |

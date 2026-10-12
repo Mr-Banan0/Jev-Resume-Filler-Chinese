@@ -23,8 +23,8 @@ const snapshot=await new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'}
 const entries=snapshot.elements.filter(el=>el.kind==='section-entry');
 assert.deepEqual(Array.from(entries,el=>el.section),['个人信息','教育经历','实习/工作经历','求职意向']);
 const plan=buildSectionPlan(snapshot.elements,{basics:{name:'示例姓名'},education:[{institution:'示例大学'}],expected:{city:'示例城市'}});
-assert.deepEqual(plan.actions.filter(action=>action.operation==='FOCUS_SECTION').map(action=>action.section),
-  ['个人信息','教育经历','实习/工作经历','求职意向']);
+assert.deepEqual(plan.actions.filter(action=>action.operation==='FOCUS_SECTION').map(action=>action.section).sort(),
+  ['个人信息','教育经历','实习/工作经历','求职意向'].sort(),'所有导航分区均具备选择资格，展示顺序由观察证据确定');
 assert.ok(!plan.actions.some(action=>action.operation==='WORK_SECTION'),
   '总览卡片需要先进入分区，再计划字段');
 assert.equal(snapshot.page.activeSection,'教育经历');

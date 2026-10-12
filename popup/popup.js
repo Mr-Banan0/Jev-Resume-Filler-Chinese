@@ -1,12 +1,15 @@
 // popup.js — 阶段1：简历录入 + 多段经历 + JSON 导入导出 + Key 持久化
 import { CONTENT_SCRIPT_VERSION, SNAPSHOT_PROTOCOL_VERSION } from '../lib/content-version.js';
 import { resolveInteractionPolicy } from '../lib/interaction-policy.js';
+import {jevProvider} from '../lib/jev-api.js';
+import {loadJevSettings,saveJevSettings} from '../lib/jev-settings.js';
 
 const DEFAULT_RESUME_URL = chrome.runtime.getURL('data/resume-default.json');
 
 const state = {
   resume: null,
-  apiKey: '',
+  apiProvider:'typesafe',
+  apiKeys:{},
   todo: null
 };
 
@@ -18,6 +21,13 @@ function withoutReferralCode(resume) {
 
 const logEl = document.getElementById('log');
 let replayLogAt = null;
+
+function renderApiSettings() {
+  const provider=jevProvider(state.apiProvider);
+  document.getElementById('jev-provider').value=state.apiProvider;
+  document.getElementById('jev-api-key').value=state.apiKeys[state.apiProvider] || '';
+  document.getElementById('jev-endpoint').textContent=`${provider.url} · ${provider.model}`;
+}
 
 function appendLog(text, kind = 'info') {
   const empty = logEl.querySelector('.log-empty');
@@ -196,7 +206,7 @@ function renderEduList() {
           <input type="text" data-list-bind="education.country" data-idx="${idx}" value="${escapeAttr(edu.country)}" /></label>
         <label class="field"><span class="field-label">学历</span>
           <select data-list-bind="education.studyType" data-idx="${idx}">
-            ${['', '大专', '本科', '硕士', '博士'].map(o => `<option value="${o}" ${edu.studyType === o ? 'selected' : ''}>${o || '未选'}</option>`).join('')}
+            ${['', '初中', '高中', '中专', '职高', '大专', '本科', '硕士', '博士'].map(o => `<option value="${o}" ${edu.studyType === o ? 'selected' : ''}>${o || '未选'}</option>`).join('')}
           </select></label>
         <label class="field"><span class="field-label">学习方式</span>
           <select data-list-bind="education.studyMode" data-idx="${idx}">
@@ -479,11 +489,24 @@ document.addEventListener('click', async (e) => {
   }
   if (t.id === 'btn-save-key') {
     const key = document.getElementById('jev-api-key').value.trim();
-    if (!key) { appendLog('请填写 Key', 'err'); return; }
-    await chrome.storage.local.set({ jevApiKey: key });
-    state.apiKey = key;
-    appendLog('Key 已保存', 'ok');
-    refreshStatus();
+    try {
+      const settings=await saveJevSettings(chrome.storage.local,{provider:state.apiProvider,key});
+      state.apiKeys=settings.keys;
+      appendLog(`${jevProvider(state.apiProvider).label} API 配置已保存到本机`, 'ok');
+      refreshStatus();
+    } catch(error) {appendLog(error.message,'err');}
+    return;
+  }
+  if(t.id==='btn-test-key') {
+    const apiKey=document.getElementById('jev-api-key').value.trim();
+    if(!apiKey) {appendLog('请填写当前服务的 API Key','err');return;}
+    t.disabled=true;
+    try {
+      const result=await chrome.runtime.sendMessage({type:'TEST_JEV_CONNECTION',apiKey,apiProvider:state.apiProvider});
+      if(!result?.ok) throw new Error(result?.reason || '连接检查未返回结果');
+      appendLog(`连接验证通过：${result.provider} / ${result.model}，合成 Choice 契约有效`,'ok');
+    } catch(error) {appendLog(`连接验证失败：${error.message}`,'err');}
+    finally {t.disabled=false;}
     return;
   }
   if (t.id === 'btn-export') {
@@ -511,8 +534,9 @@ document.addEventListener('click', async (e) => {
     setFillRunning(true);
     collectForm();
     await chrome.storage.local.set({ resume: state.resume });
-    const { jevApiKey } = await chrome.storage.local.get(['jevApiKey']);
-    if (!jevApiKey) { appendLog('请先在"设置"页填写 TypeSafe API Key', 'err'); setFillRunning(false); return; }
+    const settings=await loadJevSettings(chrome.storage.local);
+    const apiProvider=settings.provider,jevApiKey=settings.keys[apiProvider];
+    if (!jevApiKey) { appendLog('请先在"设置"页保存当前服务的 API Key', 'err'); setFillRunning(false); return; }
     if (!state.resume || !state.resume.basics || !state.resume.basics.name) {
       appendLog('简历未填写姓名，请先在"基本"页填好', 'err'); setFillRunning(false); return;
     }
@@ -541,7 +565,7 @@ document.addEventListener('click', async (e) => {
       fillPort = chrome.runtime.connect({ name: 'fill-keepalive' });
       fillPort.postMessage({ type: 'START' });
     } catch (_) {}
-    chrome.runtime.sendMessage({ type: 'START_FILL', resume: state.resume, apiKey: jevApiKey,
+    chrome.runtime.sendMessage({ type: 'START_FILL', resume: state.resume, apiKey: jevApiKey,apiProvider,
       runtimeVersion: CONTENT_SCRIPT_VERSION,
       interactionPolicy:resolveInteractionPolicy(document.getElementById('interaction-policy')?.value),
       agreementConfirmed: document.getElementById('confirm-agreements')?.checked === true }, (resp) => {
@@ -782,6 +806,7 @@ function describeProgress(p) {
   if (p.phase === 'empty') return `第 ${p.step} 步 · ${p.action}`;
   if (p.phase === 'wait') return `第 ${p.step} 步 · ${p.action}`;
   if (p.phase === 'section') return p.action;
+  if (p.action) return `第 ${p.step ?? 0} 步 · ${p.action}`;
   return `第 ${p.step} 步 · ${p.phase}`;
 }
 
@@ -818,11 +843,11 @@ async function dumpPageStructure() {
       return;
     }
     const s = frames.find(frame=>frame.frameId===0)?.structure || frames[0].structure;
-    const {fillEvents=[]}=await chrome.storage.session.get(['fillEvents']);
+    const {fillEvents=[],decisionTraces=[]}=await chrome.storage.session.get(['fillEvents','decisionTraces']);
     const events=fillEvents.map(({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,
       pickerField,options,candidates,runtimeVersion,protocolVersion,interactionPolicy,observation}) =>
       ({type,at,phase,step,operation,target,resumeField,confidence,action,reason,sections,pendingIssues,pickerField,options,candidates,runtimeVersion,protocolVersion,interactionPolicy,observation}));
-    const blob = new Blob([JSON.stringify({frames,events}, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({frames,events,decisionTraces}, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -851,6 +876,21 @@ function handleFillDone(r) {
   setFillRunning(false);
   const progressEl = document.getElementById('fill-progress');
   const reason = r.reason || '';
+  if (r.goalSummary) {
+    const {regions,regionsChecked,fields,writes,saved}=r.goalSummary;
+    const pending=r.pendingIssues || [];
+    const summary=`${r.done ? '区域检查结束' : '填写已中断'}：发现 ${regions} 个区域，检查 ${regionsChecked ?? regions} 个区域、${fields} 个字段，补齐 ${writes} 个控件，确认保存 ${saved} 次，待核对 ${pending.length} 项`;
+    if(progressEl) {
+      progressEl.textContent=summary;
+      progressEl.className='fill-progress '+(r.ok?'ok':'err');
+    }
+    appendLog(summary,r.ok?'ok':'warn');
+    for(const region of r.sections || []) appendLog(`${region.title}：${region.status}`,'info');
+    for(const issue of pending) appendLog(`待核对：${issue.section} / ${issue.field} · ${issue.reason}`,'warn');
+    if(reason) appendLog(reason,r.ok?'ok':'warn');
+    if(fillPort) {fillPort.disconnect();fillPort=null;}
+    return;
+  }
   if (Array.isArray(r.sections)) {
     const saved=r.sections.filter(item=>item.status==='saved').length;
     const existing=r.sections.filter(item=>item.status==='already-saved').length;
@@ -879,7 +919,7 @@ function handleFillDone(r) {
   }
   const summary = r.ok
     ? `${r.sectionSaved ? '当前分区已保存' : '当前分区已填写'}，共 ${r.step} 步`
-    : `结束: ${reason || '未完成'}（第 ${r.step} 步）`;
+    : `结束: ${reason || '未完成'}${Number.isFinite(r.step) ? `（第 ${r.step} 步）` : ''}`;
   appendLog(summary, r.ok ? 'ok' : 'err');
   for (const issue of r.pendingIssues || []) appendLog(`保留待补：${issue.field} · ${issue.reason}`,'warn');
 
@@ -932,7 +972,8 @@ async function restoreFillLog() {
 }
 
 async function refreshStatus() {
-  const stored = await chrome.storage.local.get(['resume', 'jevApiKey']);
+  const stored = await chrome.storage.local.get(['resume']);
+  const settings=await loadJevSettings(chrome.storage.local),key=settings.keys[settings.provider];
   const resumeStatusEl = document.getElementById('resume-status');
   const keyStatusEl = document.getElementById('key-status');
   if (resumeStatusEl) {
@@ -940,8 +981,8 @@ async function refreshStatus() {
     resumeStatusEl.className = 'status-value ' + (stored.resume ? 'ok' : 'warn');
   }
   if (keyStatusEl) {
-    keyStatusEl.textContent = stored.jevApiKey ? '已填写' : '未填写';
-    keyStatusEl.className = 'status-value ' + (stored.jevApiKey ? 'ok' : 'warn');
+    keyStatusEl.textContent = key ? `${jevProvider(settings.provider).label} 已配置` : '未填写';
+    keyStatusEl.className = 'status-value ' + (key ? 'ok' : 'warn');
   }
   const previewEl = document.getElementById('json-preview');
   if (previewEl && state.resume) previewEl.textContent = JSON.stringify(state.resume, null, 2);
@@ -951,7 +992,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.querySelector('.version').textContent=`v${chrome.runtime.getManifest().version}`;
   appendLog('Popup 已加载', 'info');
   try {
-    const stored = await chrome.storage.local.get(['resume', 'jevApiKey','interactionPolicy']);
+    const stored = await chrome.storage.local.get(['resume','interactionPolicy']);
+    const settings=await loadJevSettings(chrome.storage.local);
+    state.apiProvider=settings.provider;
+    state.apiKeys=settings.keys;
+    renderApiSettings();
+    document.getElementById('jev-provider').addEventListener('change',event=>{
+      state.apiProvider=event.target.value;
+      renderApiSettings();
+    });
     const policySelect=document.getElementById('interaction-policy');
     policySelect.value=resolveInteractionPolicy(stored.interactionPolicy);
     policySelect.addEventListener('change',async()=>{
@@ -968,8 +1017,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       state.resume = sanitizedResume;
       await chrome.storage.local.set({resume:state.resume});
     }
-    state.apiKey = stored.jevApiKey || '';
-    document.getElementById('jev-api-key').value = state.apiKey;
     renderForm();
     renderEduList();
     renderWorkList();

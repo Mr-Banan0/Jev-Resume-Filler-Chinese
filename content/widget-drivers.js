@@ -139,6 +139,71 @@
       .filter(value => value !== undefined && value !== '').join('|');
   }
 
+  function freeformCommit(host) {
+    const input=host?.querySelector?.('input');
+    if(!input || input.disabled || input.readOnly) return null;
+    for(let root=host,depth=0;root && depth<3;root=root.parentElement,depth++) {
+      for(const className of root.classList || []) {
+        const prefix=className.match(/^(.+-select)-combobox$/)?.[1];
+        // rc-select 的显式 combobox 模式在输入变化时更新 value；标准搜索模式继续使用选项回执。
+        // https://www.npmjs.com/package/rc-select （combobox / onChange）
+        const contract=prefix && root.classList.contains(prefix) &&
+          host.classList.contains(`${prefix}-selection`) && host.classList.contains(`${prefix}-selection--single`) &&
+          input.classList.contains(`${prefix}-search__field`);
+        if(!contract) continue;
+        const marker=input.closest('[aria-invalid],.has-success,.has-error,.is-error');
+        const accepted=marker?.getAttribute('aria-invalid')==='false' || marker?.classList.contains('has-success');
+        if(accepted && !input.closest('[aria-invalid="true"],.has-error,.is-error')) {
+          return {value:input.value || '',contract:'rc-select-freeform',evidence:'accepted-validation'};
+        }
+      }
+    }
+    return null;
+  }
+
+  function branchInfo(el) {
+    const row=el?.closest?.('[role="treeitem"],[role="row"],[role="option"],tr,li') || el;
+    if(!row) return {branch:false,target:null};
+    const sameRow=node=>(node.closest('[role="treeitem"],[role="row"],[role="option"],tr,li') || row)===row;
+    const indicator=Array.from(row.querySelectorAll(
+      '[aria-haspopup="tree"],[aria-haspopup="menu"],[aria-label*="caret" i],[aria-label*="chevron" i],[data-icon*="caret" i],[data-icon*="chevron" i],[class*="youcejiantou"]'))
+      .find(sameRow);
+    let switcher=null;
+    for(let node=indicator;node && node!==row;node=node.parentElement) {
+      if(Array.from(node.classList || []).some(name=>/-switcher$/.test(name))) {switcher=node;break;}
+    }
+    const noop=Array.from(switcher?.classList || []).some(name=>/-switcher-noop$/.test(name));
+    const leaf=Array.from(row.classList || []).some(name=>/-treenode-leaf$/.test(name));
+    if(noop || leaf) return {branch:false,target:null,evidence:'explicit-leaf'};
+    const expanded=row.getAttribute('aria-expanded');
+    const explicit=expanded==='true' || expanded==='false' || indicator?.matches('[aria-haspopup="tree"],[aria-haspopup="menu"]');
+    // rc-tree 的叶节点也可能渲染同一个箭头；可展开状态由组件契约提供。
+    // https://github.com/react-component/tree/blob/master/src/TreeNode.tsx
+    const switchable=Array.from(switcher?.classList || []).some(name=>/-switcher_(?:open|close)$/.test(name));
+    const directional=indicator?.matches('[class*="youcejiantou"]');
+    if(!explicit && !switchable && !directional) return {branch:false,target:null,evidence:'decorative-icon'};
+    if(!indicator) return {branch:true,target:null,evidence:'expanded-state'};
+    const button=indicator.closest('button,[role="button"]');
+    const target=button && row.contains(button) && button!==row ? button :
+      switcher && row.contains(switcher) ? switcher : indicator;
+    return {branch:true,target,evidence:explicit ? 'expanded-state' : 'widget-switcher'};
+  }
+
+  function branchTarget(el) {
+    return branchInfo(el).target;
+  }
+
+  function optionTarget(el, intent='select') {
+    if(intent==='expand') return branchInfo(el).target;
+    if(intent!=='select') return null;
+    const row=el.closest('[role="treeitem"],[role="row"],[role="option"],tr,li') || el;
+    const own=node=>(node.closest('[role="treeitem"],[role="row"],[role="option"],tr,li') || row)===row;
+    const nodes=Array.from(row.querySelectorAll('[class*="-node-content-wrapper"],[class*="-title"]')).filter(own);
+    // 同一树节点可以同时可选、可展开；选择命中本行值槽，展开命中本行开关。
+    return nodes.find(node=>Array.from(node.classList).some(name=>/-node-content-wrapper(?:-(?:open|close|normal))?$/.test(name))) ||
+      nodes.find(node=>Array.from(node.classList).some(name=>/-title$/.test(name))) || null;
+  }
+
   function closeOpenTransactions(doc) {
     const init = { bubbles: true, cancelable: true, key: 'Escape', code: 'Escape', keyCode: 27, which: 27 };
     (doc.activeElement || doc).dispatchEvent(new KeyboardEvent('keydown', init));
@@ -149,5 +214,5 @@
     }
   }
 
-  root.JevWidgetDrivers = Object.freeze({ classify, operations, readValue, stableKey, closeOpenTransactions });
+  root.JevWidgetDrivers = Object.freeze({ classify, operations, readValue, stableKey, freeformCommit, branchInfo, branchTarget, optionTarget, closeOpenTransactions });
 })(globalThis);

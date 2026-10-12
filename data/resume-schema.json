@@ -6,6 +6,22 @@
   "type": "object",
   "required": ["basics"],
   "properties": {
+    "fillPolicy": {
+      "type": "object", "title": "明确的填写偏好",
+      "properties": { "sitePolicies": { "type": "array", "items": {
+        "type": "object", "properties": {
+          "host": { "type": "string", "title": "适用网站域名" },
+          "excludedSections": { "type": "array", "title": "用户要求跳过的分区", "items": { "type": "string" } },
+          "excludedQuestions": { "type": "array", "title": "用户要求跳过的问题", "items": { "type": "string" } },
+          "corrections": { "type": "array", "title": "用户确认修正的已有字段", "items": {
+            "type": "object", "required": ["question", "sourceField"], "properties": {
+              "question": { "type": "string", "title": "网页问题名称" },
+              "sourceField": { "type": "string", "title": "用户确认的 JSON 字段路径" }
+            }
+          } }
+        }
+      } } }
+    },
     "basics": {
       "type": "object",
       "title": "基本信息",
@@ -57,6 +73,10 @@
           "description": "格式 YYYY-MM 或 YYYY-MM-DD",
           "examples": ["1998-05", "1998-05-15"]
         },
+        "birthPlace": { "type":"string", "title":"出生地" },
+        "studentOrigin": { "type":"string", "title":"生源地", "description":"用户确认的生源地，独立于籍贯和出生地。" },
+        "healthStatus": { "type":"string", "title":"健康状况" },
+        "hasOverseasStudy": { "type":"string", "title":"有无海外留学经历" },
         "phone": {
           "type": "string",
           "title": "手机",
@@ -130,6 +150,7 @@
           "enum": ["群众", "共青团员", "中共党员", "中共预备党员", "民主党派", ""],
           "examples": ["群众"]
         },
+        "partyJoinDate": {"type":"string","title":"入党时间","description":"按用户确认的日期精度保存，如 YYYY-MM。"},
         "idType": {
           "type": "string",
           "title": "证件类型",
@@ -203,7 +224,7 @@
     "education": {
       "type": "array",
       "title": "教育经历",
-      "description": "可包含本科 / 硕士研究生 / 博士研究生 多段",
+      "description": "按实际求学经历填写，可包含高中、中专、大专、本科、硕士和博士等多段经历。",
       "items": {
         "type": "object",
         "properties": {
@@ -214,7 +235,7 @@
           "studyType": {
             "type": "string",
             "title": "学历",
-            "enum": ["大专", "本科", "硕士", "博士", ""],
+            "enum": ["初中", "高中", "中专", "职高", "大专", "本科", "硕士", "博士", ""],
             "examples": ["本科"]
           },
           "studyMode": {
@@ -279,7 +300,10 @@
           "position": { "type": "string", "title": "职位", "examples": ["前端实习生"] },
           "startDate": { "type": "string", "title": "开始时间" },
           "endDate": { "type": "string", "title": "结束时间" },
+          "endDateFallback": { "type": "string", "title": "无至今选项时的结束日期", "description": "用户明确指定的替代日期，仅在日期控件无至今选项时使用。" },
+          "workType": { "type": "string", "title": "工作类型", "examples": ["实习"] },
           "summary": { "type": "string", "title": "实习描述" },
+          "summaryShort": { "type": "string", "title": "实习描述短版", "description": "保留原文，另存适合限字表单的精简版本。" },
           "responsibilities": { "type": "string", "title": "工作职责" },
           "deliverables": { "type": "string", "title": "交付结果" },
           "outcomes": { "type": "string", "title": "实习成果" },
@@ -303,7 +327,9 @@
           "position": { "type": "string", "title": "职位", "examples": ["前端开发工程师"] },
           "startDate": { "type": "string", "title": "开始时间" },
           "endDate": { "type": "string", "title": "结束时间", "examples": ["至今"] },
+          "endDateFallback": { "type": "string", "title": "无至今选项时的结束日期", "description": "用户明确指定的替代日期，仅在日期控件无至今选项时使用。" },
           "summary": { "type": "string", "title": "工作描述" },
+          "summaryShort": { "type": "string", "title": "工作描述短版", "description": "保留原文，另存适合限字表单的精简版本。" },
           "responsibilities": { "type": "string", "title": "工作职责" },
           "deliverables": { "type": "string", "title": "交付结果" },
           "outcomes": { "type": "string", "title": "工作成果" },
@@ -327,8 +353,10 @@
           "responsibilities": { "type": "string", "title": "项目负责内容" },
           "startDate": { "type": "string" },
           "endDate": { "type": "string" },
+          "endDateFallback": { "type": "string", "title": "无至今选项时的结束日期", "description": "用户明确指定的替代日期，仅在日期控件无至今选项时使用。" },
           "location": { "type": "string", "title": "项目地点" },
           "description": { "type": "string", "title": "项目描述" },
+          "descriptionShort": { "type": "string", "title": "项目描述短版", "description": "保留原文，另存适合限字表单的精简版本。" },
           "deliverables": { "type": "string", "title": "交付结果" },
           "outcomes": { "type": "string", "title": "项目成果" },
           "techStack": { "type": "array", "title": "技术栈", "items": { "type": "string" } }
@@ -342,13 +370,17 @@
         "type": "object",
         "properties": {
           "title": { "type": "string", "title": "论文名称" },
+          "titleShort": { "type": "string", "title": "论文名称短版", "description": "保留完整名称，另存来源标题的短写供限字表单使用。" },
           "type": { "type": "string", "title": "论文类型" },
           "level": { "type": "string", "title": "论文级别" },
           "zone": { "type": "string", "title": "期刊分区" },
           "journal": { "type": "string", "title": "发表期刊" },
           "date": { "type": "string", "title": "发表时间", "examples": ["2026-06"] },
           "authorOrder": { "type": "string", "title": "作者顺序" },
-          "details": { "type": "string", "title": "论文详情" }
+          "details": { "type": "string", "title": "论文详情" },
+          "detailsShort": { "type": "string", "title": "论文摘要短版", "description": "根据原文精简，供限字字段使用。" },
+          "publicationDetails": { "type": "string", "title": "出版发表情况" },
+          "coAuthorship": { "type": "string", "title": "合著或独著" }
         },
         "required": ["title"]
       }
@@ -391,6 +423,7 @@
           "certificate": {"type":"string","title":"语言证书名称"},
           "score": {"type":"string","title":"分数"},
           "siteFluency": {"type":"string","title":"熟练程度"},
+          "date": {"type":"string","title":"证书获得日期"},
           "fluency": { "type": "string", "title": "水平", "examples": ["一级乙等", "CET-6"] }
         }
       }
@@ -447,6 +480,7 @@
         "properties": {
           "relationship": {"type":"string","title":"与本人关系"},
           "name": {"type":"string","title":"姓名"},
+          "phone": {"type":"string","title":"联系电话"},
           "birthDate": {"type":"string","title":"出生日期","format":"date"},
           "company": {"type":"string","title":"工作单位"},
           "position": {"type":"string","title":"职务"},

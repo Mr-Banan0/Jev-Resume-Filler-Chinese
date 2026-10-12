@@ -5,6 +5,9 @@ const readJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url),
 const schema = readJson('../data/resume-schema.json');
 const template = readJson('../data/resume-default.json');
 const prompt = readFileSync(new URL('../prompts/resume-parse-prompt.md', import.meta.url), 'utf8');
+assert.ok(schema.properties.education.items.properties.studyType.enum.includes('高中'));
+assert.match(readFileSync(new URL('../popup/popup.js', import.meta.url),'utf8'), /'初中', '高中', '中专'/,
+  '教育编辑器支持高中等实际求学阶段');
 
 for (const key of Object.keys(schema.properties)) {
   assert.ok(Object.hasOwn(template, key), `默认模板缺少顶层分区：${key}`);

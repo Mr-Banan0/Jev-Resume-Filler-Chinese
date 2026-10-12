@@ -3,7 +3,7 @@
 
 (function () {
   // Popup 在扩展重载后用此版本识别遗留页面中的旧 content script，并主动替换。
-  const CONTENT_SCRIPT_VERSION = '2026-10-08.59';
+  const CONTENT_SCRIPT_VERSION = '2026-10-11.4';
   const previousContentVersion = globalThis.__jevResumeFillerContentVersion;
   if (previousContentVersion && previousContentVersion !== CONTENT_SCRIPT_VERSION) {
     // Chrome 重载扩展时会保留页面隔离世界。释放旧实例的注册标记，让新代码
@@ -44,9 +44,16 @@
   // 当前快照到下一次执行之间有效，页面重扫后会随注册表一起刷新。
   let elementMetaRegistry = [];
   let observationCoverage = {};
+  let pageObservation = {regions:[],unobservedFields:[]};
+  let genericPopup = null;
+  let transactionVisibleNodes = new Set();
   const observedMonthControls = new WeakSet();
+  // 同一文档重注入时保留实际点击回执；DOM 节点或输入值改变后旧证据自然失效。
+  const comboboxOptionReceipts = globalThis.__jevComboboxOptionReceipts || new WeakMap();
+  globalThis.__jevComboboxOptionReceipts = comboboxOptionReceipts;
   let transactionTrigger = null;
   let activeLayer = null;
+  let blockingNotice = null;
   let sectionMarkers = [];
   const documentId = globalThis.crypto?.randomUUID?.() || `doc-${Date.now()}-${Math.random()}`;
   const nodeIds = new WeakMap();
@@ -99,10 +106,34 @@
     return null;
   }
 
-  function feishuComboboxHost(el) {
-    if (!isFeishuJobsPage() || !el?.matches?.('input,textarea')) return null;
+  function comboboxHost(el) {
+    if (!el?.matches?.('input,textarea,[role="combobox"]')) return null;
     const host = el.closest?.('[role="combobox"]');
-    return host && host !== el ? host : null;
+    return host && !host.matches('input,textarea,select') ? host : null;
+  }
+
+  function comboboxSelection(host) {
+    const fixedInput=host.querySelector('input:disabled,input[readonly],textarea:disabled,textarea[readonly]');
+    if(fixedInput?.value) return fixedInput.value;
+    const freeform=widgetDrivers.freeformCommit?.(host);
+    if(freeform) return freeform.value;
+    const copy=host.cloneNode(true);
+    // 关闭的多选框可用内联 listbox 展示已选标签和搜索输入，保留标签作为根值。
+    const inlineLists=new Set(Array.from(copy.querySelectorAll('[role="listbox"]')).filter(list=>
+      host.getAttribute('aria-expanded')!=='true' && list.querySelector('input,textarea') &&
+      !list.querySelector('[role="option"]:not([aria-selected="true"])')));
+    copy.querySelectorAll('[role="listbox"],[role="option"]').forEach(node=>{
+      if(!inlineLists.has(node) && !Array.from(inlineLists).some(list=>list.contains(node) &&
+        node.getAttribute('aria-selected')==='true')) node.remove();
+    });
+    copy.querySelectorAll('input,textarea,[class*="placeholder" i],[class*="mirror" i],[class*="search" i],svg,[aria-hidden="true"]').forEach(node=>node.remove());
+    const text=tidyLabel(copy.textContent || '');
+    if(text && !/^(?:请选择|请输入|请搜索|未选择)/.test(text)) return text;
+    const receipt=comboboxOptionReceipts.get(host),input=host.querySelector('input,textarea');
+    // 输入型选择器通过实际选项点击、弹层关闭及根输入回读共同确认已选值。
+    return receipt && host.getAttribute('aria-expanded')!=='true' &&
+      (!receipt.popup?.isConnected || !isVisible(receipt.popup)) &&
+      tidyLabel(input?.value || '')===receipt.label ? receipt.label : '';
   }
 
   function isFeishuDateRange(el) {
@@ -216,15 +247,15 @@
   }
 
   function fileUploadArea(el) {
-    const row = el.closest('.ud-formily-item,.form-item,.el-form-item,.ant-form-item');
+    const row = el.closest('dl,tr,fieldset,.ud-formily-item,.form-item,.el-form-item,.ant-form-item,.atsx-form-item');
     if (row && row.querySelectorAll('input[type="file"]').length === 1) return row;
     return el.closest('[class*="upload" i]')?.parentElement || el.parentElement;
   }
 
   function fileUploadPending(el) {
-    if (/上传中|uploading|正在上传|正在解析/i.test(fileUploadArea(el)?.textContent || '')) return true;
+    if (/上传中|uploading|正在上传|正在解析/i.test(visibleText(fileUploadArea(el)))) return true;
     return Array.from(document.querySelectorAll('[role="dialog"],[class*="modal" i],[class*="message" i]'))
-      .some(node => isVisible(node) && /上传中|uploading|正在上传|正在解析/i.test(node.textContent || ''));
+      .some(node => isVisible(node) && /上传中|uploading|正在上传|正在解析/i.test(visibleText(node)));
   }
 
   function isOptionalResumeParser(el) {
@@ -243,8 +274,10 @@
     if (fileUploadPending(el)) return '';
     let node = el.parentElement;
     for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
-      if ((node.querySelectorAll?.('input[type="file"]')?.length || 0) > 1) break;
-      const text = String(node.innerText || node.textContent || '');
+      const peers=Array.from(node.querySelectorAll?.('input[type="file"]') || []);
+      if(peers.length>1 && peers.some(peer=>fileFieldLabel(peer)!==fileFieldLabel(el))) break;
+      const text = [visibleText(node),...Array.from(node.querySelectorAll('input:not([type="file"]):not([type="hidden"])'))
+        .filter(isVisible).map(input=>input.value || '')].join(' ');
       if (/上传中|uploading/i.test(text)) return '';
       const match = text.match(/[\w\u4e00-\u9fff()（）.-]+\.(?:pdf|docx?|pptx?|wps|jpe?g|png|txt)\b/i);
       if (match) return match[0];
@@ -254,9 +287,213 @@
     return asynchronous ? '' : el.files?.[0]?.name || '';
   }
 
+  // 通用观察保留问题、选项、提示和当前值的独立身份。结构证据由 DOM 提供，
+  // 字段含义由局部 Jev 判断。dl/dt/dd、表格和带 label 的容器都采用相同协议。
+  const OBSERVED_ROW = 'dl,tr,fieldset,[role="radiogroup"],.form-item,.el-form-item,.ant-form-item,.atsx-form-item,.ud-formily-item,[data-field-id],[class*="formItem"]';
+  const OBSERVED_CONTROL = 'input:not([type="hidden"]),textarea,select,[contenteditable="true"],[role="combobox"],[role="radio"],[role="checkbox"]';
+  const cleanCaption = value => tidyLabel(value).replace(/\s*[*＊]\s*$/, '').trim();
+  function visibleText(el) {
+    if (!el) return '';
+    const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT);
+    const chunks=[];
+    let node;
+    while ((node=walker.nextNode())) {
+      const parent=node.parentElement;
+      if (!parent || !isVisible(parent) || parent.closest('script,style,template')) continue;
+      if (genericPopup?.contains(parent) && !genericPopup.contains(el)) continue;
+      if (parent.closest('[role="listbox"],[role="option"]') && !el.closest('[role="listbox"],[role="option"]')) continue;
+      const text=String(node.textContent || '').replace(/\s+/g,' ').trim();
+      if (text) chunks.push(text);
+    }
+    return chunks.join(' ').replace(/\s+/g,' ').trim();
+  }
+
+  function ownVisibleText(el) {
+    return tidyLabel(visibleText(el));
+  }
+
+  function observedRow(el) {
+    const row=el.closest?.(OBSERVED_ROW);
+    if (row && row!==el && (!genericPopup?.contains(el) || genericPopup.contains(row))) return row;
+    for (let node=el.parentElement,depth=0;node && node!==document.body && depth<4;node=node.parentElement,depth++) {
+      if (genericPopup?.contains(node)) break;
+      const caption=Array.from(node.children || []).find(child=>child!==el && !child.contains(el) &&
+        child.matches?.('label,dt,legend,[class*="label" i],[class*="caption" i]') && ownVisibleText(child));
+      if (caption && node.querySelectorAll('label,dt,legend,[class*="label" i],[class*="caption" i]').length===1 &&
+          node.querySelectorAll(OBSERVED_CONTROL).length<=4) return node;
+    }
+    return null;
+  }
+
+  function observedQuestion(el) {
+    const labelled=Array.from(el.labels || []).find(label=>isVisible(label));
+    const explicit=labelled || (el.id && Array.from(document.querySelectorAll('label[for]')).find(label=>label.htmlFor===el.id));
+    if(explicit && !explicit.contains(el) && !el.closest('dl') && !explicit.closest('[role="combobox"]') &&
+      cleanCaption(ownVisibleText(explicit))!==tidyLabel(el.value || '')) return cleanCaption(ownVisibleText(explicit));
+    const row=observedRow(el);
+    if (!row) return '';
+    const captions=Array.from(row.querySelectorAll('dt,legend,label,[class*="label" i],[class*="caption" i]'))
+      .filter(node=>!genericPopup?.contains(node) && (node.tagName==='DT' || node.tagName==='LEGEND' ||
+        !node.contains(el) && !node.querySelector(OBSERVED_CONTROL)) && isVisible(node));
+    const caption=captions.find(node=>node.matches('dt,legend,label')) || captions[0];
+    if (caption) {
+      // 有些定义项把 radio 直接放在 dt 内，问题位于第一个控件之前。
+      const parts=[];
+      for (const node of caption.childNodes) {
+        if (node.nodeType===Node.ELEMENT_NODE && (node.matches?.(OBSERVED_CONTROL) || node.querySelector?.(OBSERVED_CONTROL))) break;
+        const text=node.nodeType===Node.TEXT_NODE ? node.textContent : ownVisibleText(node);
+        if (text && !(node.nodeType===Node.ELEMENT_NODE &&
+          node.matches('[role="tooltip"],[role="note"],[class*="help" i],[class*="hint" i],[class*="desc" i]'))) parts.push(text);
+      }
+      const text=cleanCaption(parts.join(' '));
+      if (text && text.length<160) return text;
+    }
+    if(el.matches('input[type="radio"],input[type="checkbox"]')) {
+      for(let parent=el.parentElement;parent && row.contains(parent);parent=parent.parentElement) {
+        const parts=[];
+        const walker=document.createTreeWalker(parent,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT);
+        for(let node=walker.nextNode();node;node=walker.nextNode()) {
+          if(node.nodeType===Node.ELEMENT_NODE && node.matches?.(OBSERVED_CONTROL)) break;
+          if(node.nodeType===Node.TEXT_NODE && isVisible(node.parentElement)) parts.push(node.textContent);
+        }
+        const text=cleanCaption(parts.join(' '));
+        if(text && text.length<160 && !/^(?:是|否|有|无)$/.test(text)) return text;
+        if(parent===row) break;
+      }
+    }
+    return '';
+  }
+
+  function observedOption(el) {
+    if(!el.matches('input')) return ownVisibleText(el);
+    const explicit=Array.from(el.labels || []).map(label=>ownVisibleText(label)).find(Boolean);
+    if (explicit && explicit.length<40) return explicit;
+    const chunks=[];
+    for (let node=el.nextSibling;node;node=node.nextSibling) {
+      if (node.nodeType===Node.ELEMENT_NODE && (node.matches?.('input,label') || node.querySelector?.('input'))) break;
+      const text=tidyLabel(node.nodeType===Node.TEXT_NODE ? node.textContent : ownVisibleText(node));
+      if (text) chunks.push(text);
+      if (chunks.join(' ').length>40) break;
+    }
+    const adjacent=tidyLabel(chunks.join(' ')).split(/注[：:]|（选择|\(选择/)[0].trim();
+    if (adjacent && adjacent.length<40) return adjacent;
+    return tidyLabel(el.getAttribute?.('aria-label') || el.textContent || '');
+  }
+
+  // 同一问题下的独立选择槽保留实际顺序；弹层列表与槽内搜索框保持各自身份。
+  function observedComposite(el) {
+    const row=observedRow(el);
+    if(!row || genericPopup?.contains(el)) return null;
+    const selectors=Array.from(row.querySelectorAll('select,[role="combobox"],input[readonly],.mFormSelect,.mFormCity'))
+      .filter(node=>isVisible(node) && !genericPopup?.contains(node));
+    const roots=selectors.filter(node=>!selectors.some(parent=>parent!==node && parent.contains(node)));
+    const index=roots.findIndex(root=>root===el || root.contains(el) || el.contains(root));
+    if(roots.length<2 || index<0) return null;
+    return {position:index,count:roots.length,peers:roots.map((root,position)=>({position,
+      value:tidyLabel(root.matches('input,select') ? root.value : root.textContent || ''),
+      placeholder:root.getAttribute('placeholder') || ''}))};
+  }
+
+  function headingPrimaryText(el) {
+    const chunks=[];
+    for (const node of el.childNodes) {
+      if (node.nodeType===Node.ELEMENT_NODE && node.matches?.('a,button,[role="button"],input')) continue;
+      const text=tidyLabel(node.nodeType===Node.TEXT_NODE ? node.textContent : ownVisibleText(node));
+      if (!text) continue;
+      chunks.push(text);
+    }
+    return cleanCaption(chunks[0] || ownVisibleText(el)).replace(/\s*(?:必填|添加|新增|编辑)\s*$/, '').trim();
+  }
+
+  function discoverGenericPopup() {
+    const trigger=transactionTrigger?.isConnected ? transactionTrigger : null;
+    if (!trigger) return null;
+    const controlled=trigger?.getAttribute?.('aria-controls');
+    if (controlled) {
+      const surface=document.getElementById(controlled);
+      if (surface && isVisible(surface)) return surface;
+    }
+    const candidates=[];
+    for (const surface of document.querySelectorAll('div,ul,section,[role="listbox"],[role="dialog"]')) {
+      if (!isVisible(surface) || surface.contains(trigger) || surface.closest('nav,header,aside')) continue;
+      if (isRecordEditorSurface(surface) && surface.matches('[role="dialog"],.ant-modal,.el-dialog')) continue;
+      const style=window.getComputedStyle(surface);
+      const declared=surface.matches('[role="listbox"],[role="menu"]') ||
+        surface.matches('ul,ol') && !!observedRow(trigger)?.contains(surface);
+      if (!declared && !['absolute','fixed'].includes(style.position)) continue;
+      const box=surface.getBoundingClientRect();
+      if (box.width<30 || box.height<15 || !notOccluded(surface,box)) continue;
+      const choices=Array.from(surface.querySelectorAll('a,button,li,td,[role="option"],span,div'))
+        .filter(node=>isVisible(node) && ownVisibleText(node).length>0 && ownVisibleText(node).length<=60 &&
+          !node.querySelector('a,button,li,td,[role="option"],span,div,input,textarea,select'));
+      if (!choices.length) continue;
+      const anchor=trigger?.getBoundingClientRect();
+      const related=trigger && (observedRow(trigger)?.contains(surface) ||
+        Math.min(box.right,anchor.right)>Math.max(box.left,anchor.left) &&
+        Math.min(Math.abs(box.top-anchor.bottom),Math.abs(box.bottom-anchor.top))<350);
+      const fresh=!transactionVisibleNodes.has(surface);
+      // 匿名选择器由本次激活产生。页面常驻的固定导航保持自己的页面身份。
+      if (!fresh) continue;
+      candidates.push({surface,related:!!related,declared,fresh,area:box.width*box.height});
+    }
+    const selected=candidates.sort((a,b)=>Number(b.related)-Number(a.related) || Number(b.declared)-Number(a.declared) ||
+      Number(b.fresh)-Number(a.fresh) || b.area-a.area)[0];
+    if(!selected) return null;
+    // 列表之外的翻页、年月切换与确认按钮属于同一个字段事务。
+    // 从已识别的列表向上扩到最小的新弹层，保留独立导航，边界仍由激活字段限定。
+    const navigation=/^(?:<|>|‹|›|«|»|上一(?:年|月|页|组)|下一(?:年|月|页|组)|previous|prev|next|确定|确认|完成|取消|ok|done|cancel)$/i;
+    const wrapper=candidates.filter(candidate=>candidate!==selected && candidate.related && candidate.fresh &&
+      candidate.surface.contains(selected.surface) &&
+      Array.from(candidate.surface.querySelectorAll('a,button,[role="button"]')).some(node=>
+        !selected.surface.contains(node) && isVisible(node) &&
+        navigation.test(ownVisibleText(node) || node.getAttribute('aria-label') || '')))
+      .sort((a,b)=>a.area-b.area)[0];
+    return wrapper?.surface || selected.surface;
+  }
+
+  function discoverBlockingNotice() {
+    const candidates=Array.from(document.querySelectorAll('[role="alertdialog"],[role="dialog"],div,section'))
+      .filter(surface=>{
+        if(!isVisible(surface) || surface.querySelector('input:not([type="hidden"]),textarea,select')) return false;
+        const style=window.getComputedStyle(surface),box=surface.getBoundingClientRect();
+        if(!['absolute','fixed'].includes(style.position) || box.width<150 || box.height<80 ||
+          box.width>window.innerWidth*.9 || !notOccluded(surface,box)) return false;
+        const heading=Array.from(surface.querySelectorAll('h1,h2,h3,h4,h5,[role="heading"]'))
+          .map(node=>ownVisibleText(node)).find(text=>/^(?:提示|温馨提示|通知|错误|注意|消息)$/.test(text));
+        return !!heading || surface.getAttribute('role')==='alertdialog';
+      });
+    const surface=candidates.sort((a,b)=>a.getBoundingClientRect().width*a.getBoundingClientRect().height-
+      b.getBoundingClientRect().width*b.getBoundingClientRect().height)[0];
+    if(!surface) return null;
+    const text=visibleText(surface),restricted=/协议|隐私|条款|声明|授权|删除|清空|重置|撤回|注销|支付|购买|订阅|(?:是否|确认|确定).{0,20}(?:投递|提交)/.test(text);
+    const informational=/请及时保存|输入.{0,80}(不合规|非法)|请输入|请选择|必填|保存成功|添加成功|修改成功|填写完整|请勿.{0,40}重复/.test(text);
+    const dismiss=!restricted && informational ? Array.from(surface.querySelectorAll('a,button,[role="button"]'))
+      .find(node=>isVisible(node) && /^(?:确认|确定|知道了|我知道了|关闭|OK)$/i.test(ownVisibleText(node))) : null;
+    return {surface,text,dismiss};
+  }
+
+  function captureTransactionSurface() {
+    visibilityCache=new Map();
+    transactionVisibleNodes=new Set(Array.from(document.querySelectorAll('div,ul,section,[role="listbox"],[role="dialog"]'))
+      .filter(node=>isVisible(node) && node.getBoundingClientRect().width>=30 && node.getBoundingClientRect().height>=15));
+  }
+
+  function popupSelectionNode(surface) {
+    if(!surface) return null;
+    return Array.from(surface.querySelectorAll('*')).filter(isVisible)
+      .filter(node=>node.querySelectorAll('a,button,li').length<=6)
+      .map(node=>({node,text:visibleText(node)})).filter(({text})=>/^(?:已选择|已选|selected)\s*[:：]/i.test(text) &&
+        text.length<200 && text.replace(/^(?:已选择|已选|selected)\s*[:：]\s*/i,'').length>0 &&
+        !/请先|请选择/.test(text)).sort((a,b)=>b.text.length-a.text.length)[0]?.node || null;
+  }
+
+  function popupSelectionText(surface) {
+    return visibleText(popupSelectionNode(surface));
+  }
+
   function buildSectionMarkers() {
     const isFieldChoice = el => !!el.closest('select,option,[role="option"],[role="listbox"],[role="menu"],.el-select,.el-select-dropdown,.ant-select,.ant-select-dropdown,.ant-cascader-menus');
-    const fieldRow = el => el.closest('.form-row,.form-item,.el-form-item,.ant-form-item,.my-list-item,.ud-formily-item,[class*="apply-field-"],[data-field-id]') ||
+    const fieldRow = el => el.closest('dl,tr,.form-row,.form-item,.el-form-item,.ant-form-item,.atsx-form-item,.my-list-item,.ud-formily-item,[class*="apply-field-"],[data-field-id]') ||
       el.parentElement?.closest('[class*="field" i]');
     const known = Array.from(document.querySelectorAll('body *')).filter(el => {
       if (!isVisible(el) || isFieldChoice(el)) return false;
@@ -264,10 +501,12 @@
       if (fieldContainer?.querySelector('input:not([type="hidden"]),textarea,select,[role="combobox"]')) return false;
       const copy = el.cloneNode(true);
       copy.querySelectorAll('button,a,[role="button"],input,select,textarea').forEach(node=>node.remove());
-      const text = tidyLabel(copy.textContent || '').replace(/\s*(?:必填|添加|新增|编辑)\s*$/, '').trim();
+      const text = el.matches('h1,h2,h3,h4,h5,h6,legend,[role="heading"]') ? headingPrimaryText(el) :
+        tidyLabel(copy.textContent || '').replace(/\s*(?:必填|添加|新增|编辑)\s*$/, '').trim();
       if (!FORM_SECTION_TITLES.has(text)) return false;
       el.__jevObservedSectionTitle = text;
-      return !Array.from(el.children).some(child => tidyLabel(child.textContent || '') === text);
+      return el.matches('h1,h2,h3,h4,h5,h6,legend,[role="heading"]') ||
+        !Array.from(el.children).some(child => tidyLabel(child.textContent || '') === text);
     });
     // 已知标题与动态标题一起采集；同一页面常混合通用分区和 ATS 自定义分区。
     const dynamic = Array.from(document.querySelectorAll('body *')).filter(el => {
@@ -277,7 +516,8 @@
       if (fieldContainer?.querySelector('input:not([type="hidden"]),textarea,select,[role="combobox"]')) return false;
       const copy=el.cloneNode(true);
       copy.querySelectorAll('button,a,[role="button"],input,select,textarea').forEach(node=>node.remove());
-      const text = tidyLabel(copy.textContent || '').replace(/\s*(?:必填|添加|新增|编辑)\s*$/, '').trim();
+      const text = el.matches('h1,h2,h3,h4,h5,h6,legend,[role="heading"]') ? headingPrimaryText(el) :
+        tidyLabel(copy.textContent || '').replace(/\s*(?:必填|添加|新增|编辑)\s*$/, '').trim();
       if (text.length < 2 || text.length > 40) return false;
       if (/^(?:请|若有|如有|含)|详尽|能让|了解您|温馨提示/.test(text)) return false;
       if (/^(?:\+?\s*)?(?:新增|添加|增加|编辑|删除)/.test(text)) return false;
@@ -297,25 +537,164 @@
       if (!declared && !styledHeading && !(semanticTitle && nearbyModule)) return false;
       if (!declared && !ownsFields && !semanticTitle) return false;
       el.__jevObservedSectionTitle = text;
-      return !Array.from(el.children).some(child => tidyLabel(child.textContent || '') === text);
+      return declared || !Array.from(el.children).some(child => tidyLabel(child.textContent || '') === text);
     });
-    sectionMarkers = [...new Set([...known, ...dynamic])]
+    // 物理模块的标题分支与字段分支相邻，标题可以使用任意名称和样式。
+    const physical=[];
+    for(const control of document.querySelectorAll('input:not([type="hidden"]),textarea,select,[role="combobox"]')) {
+      if((!isVisible(control) && !(control.matches('input[type="file"]') && isVisible(fileUploadArea(control))) &&
+        !(/^(?:radio|checkbox)$/.test(control.type || '') && resolveVisibleProxy(control))) ||
+        genericPopup?.contains(control)) continue;
+      const row=observedRow(control);
+      for(let node=control.parentElement,depth=0;node && node!==document.body && depth<20;node=node.parentElement,depth++) {
+        if(node===row || row?.contains(node) || node.matches('dl,tr,fieldset,form,label,[role="combobox"],[role="radiogroup"]')) continue;
+        const branches=Array.from(node.children).filter(child=>!child.contains(control) &&
+          !child.matches('input,textarea,select,button,a,[role="combobox"],[role="button"],label,dt') &&
+          !child.querySelector('label,dt,[class*="form-item-label"],[class*="field-label"]') &&
+          !child.querySelector('input,textarea,select,[role="combobox"]') && isVisible(child));
+        const caption=branches.find(child=>{
+          const copy=child.cloneNode(true);
+          copy.querySelectorAll('button,a,[role="button"]').forEach(el=>el.remove());
+          const text=headingPrimaryText(copy);
+          return text.length>=2 && text.length<=40 &&
+            !/^(?:请|备注|说明|注[：:]|添加|新增|删除|取消|保存|确定)/.test(text) &&
+            !/\d{1,2}:\d{2}|保存成功|正在保存|上传成功/.test(text) &&
+            !child.matches('label,dt,[role="alert"]');
+        });
+        const controlCount=node.querySelectorAll('input:not([type="hidden"]),textarea,select,[role="combobox"]').length;
+        const peerModule=Array.from(node.parentElement?.children || []).some(peer=>peer!==node &&
+          peer.querySelector('input,textarea,select,[role="combobox"]') &&
+          [...known,...dynamic,...physical].some(heading=>peer.contains(heading)));
+        const uploadModule=!!node.querySelector('input[type="file"]') && peerModule;
+        if(!caption || !uploadModule && !peerModule && (controlCount<2 || node.querySelectorAll('label,dt,[class*="form-item-label"],[class*="field-label"]').length<2)) continue;
+        const declaredCaption=[...known,...dynamic].find(heading=>caption===heading || caption.contains(heading));
+        if(declaredCaption) {physical.push(declaredCaption);break;}
+        const copy=caption.cloneNode(true);copy.querySelectorAll('button,a,[role="button"]').forEach(el=>el.remove());
+        const text=headingPrimaryText(copy);
+        // 字段行的说明属于字段；与同级模块共享容器形态提供额外模块证据。
+        if(!uploadModule && node.querySelectorAll('label,dt,[class*="label" i]').length<2 &&
+          !Array.from(node.parentElement?.children || []).some(peer=>peer!==node && peer.tagName===node.tagName &&
+            peer.querySelector('input,textarea,select,[role="combobox"]'))) continue;
+        caption.__jevObservedSectionTitle=text;physical.push(caption);break;
+      }
+    }
+    // 空模块以真实新增入口旁的标题分支建立边界，入口文字只描述动作。
+    for(const entry of document.querySelectorAll('button,a,[role="button"],span,div')) {
+      const text=ownVisibleText(entry);
+      if(!isVisible(entry) || genericPopup?.contains(entry) || text.length>60 ||
+        !/^(?:\+\s*)?(?:添加|新增|增加|填写|编辑|修改|add\b|edit\b)/i.test(text) ||
+        Array.from(entry.children).some(child=>ownVisibleText(child)===text)) continue;
+      const clickable=entry.matches('button,a,[role="button"]') || entry.hasAttribute('onclick') ||
+        window.getComputedStyle(entry).cursor==='pointer';
+      if(!clickable) continue;
+      for(let node=entry.parentElement,depth=0;node && node!==document.body && depth<16;node=node.parentElement,depth++) {
+        if(node.matches('nav,aside,[role="navigation"],dl,tr,label')) break;
+        const captions=Array.from(node.children).filter(child=>!child.contains(entry) && isVisible(child) &&
+          !child.matches('button,a,label,dt,[role="button"]') &&
+          !child.querySelector('input,textarea,select,label,dt'));
+        const caption=captions.find(child=>{
+          const primary=headingPrimaryText(child);
+          return primary.length>=2 && primary.length<=40 &&
+            !/^(?:请|添加|新增|编辑|删除|取消|保存|确定)/.test(primary);
+        });
+        const peerModule=Array.from(node.parentElement?.children || []).some(peer=>peer!==node &&
+          [...known,...dynamic,...physical].some(heading=>peer.contains(heading)));
+        if(!caption || !peerModule && !caption.matches('h1,h2,h3,h4,h5,h6,legend,[role="heading"]')) continue;
+        const declared=[...known,...dynamic,...physical].find(heading=>caption===heading || caption.contains(heading));
+        if(declared) physical.push(declared);
+        else {caption.__jevObservedSectionTitle=headingPrimaryText(caption);physical.push(caption);}
+        break;
+      }
+    }
+    sectionMarkers = [...new Set([...known, ...dynamic, ...physical])]
       .sort((left, right) => left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1)
       .map(el => {
-        const raw = el.__jevObservedSectionTitle || tidyLabel(el.textContent || '');
+        const raw = el.matches('h1,h2,h3,h4,h5,h6,legend,[role="heading"]') ? headingPrimaryText(el) :
+          el.__jevObservedSectionTitle || tidyLabel(el.textContent || '');
         const title = raw.replace(/\s*必填\s*$/, '').trim();
         return { el, title: FORM_SECTION_TITLES.has(title) ? title : raw };
-      });
-    // 标题拥有的最近表单容器建立物理边界；平铺标题保留 DOM 位置证据。
+      }).filter(marker=>!marker.el.closest('dl,tr') && !genericPopup?.contains(marker.el));
+    sectionMarkers=sectionMarkers.filter(marker=>!sectionMarkers.some(other=>other!==marker &&
+      other.el.matches('h1,h2,h3,h4,h5,h6,[role="heading"]') && other.el.contains(marker.el)));
+    const ownsEntry=marker=>Array.from(marker.el.querySelectorAll('a,button,[role="button"]'))
+      .some(node=>/^(?:编辑|修改|添加|新增)$/.test(tidyLabel(node.textContent || '')));
+    // 同一模块中的姓名、记录标题等展示标题归属于带编辑入口的分区标题。
+    sectionMarkers=sectionMarkers.filter(marker=>{
+      if(ownsEntry(marker)) return true;
+      for(let node=marker.el.parentElement,depth=0;node && node!==document.body && depth<3;node=node.parentElement,depth++) {
+        const owners=sectionMarkers.filter(other=>other!==marker && node.contains(other.el) && ownsEntry(other));
+        if(owners.length>1) break;
+        if(owners.length===1 && (owners[0].el.compareDocumentPosition(marker.el)&Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+        if(node.matches('section,article,[role="form"]')) break;
+      }
+      return true;
+    });
+    // 标题、字段和入口共同确定物理模块；空模块也保留可进入的节点身份。
     for (const marker of sectionMarkers) {
-      for (let node=marker.el.parentElement,depth=0;node && depth<5 && node!==document.body;node=node.parentElement,depth++) {
-        if (!node.querySelector('input,textarea,select,[role="combobox"]')) continue;
+      for (let node=marker.el.parentElement,depth=0;node && depth<16 && node!==document.body;node=node.parentElement,depth++) {
+        if (node.matches('nav,aside,[role="navigation"]')) break;
+        const hasFields=!!node.querySelector('input,textarea,select,[role="combobox"]');
+        const hasEntry=Array.from(node.querySelectorAll('button,a,[role="button"],div,span')).some(el=>
+          !marker.el.contains(el) && /^(?:\+\s*)?(?:添加|新增|增加|填写|编辑|修改|add\b|edit\b)/i.test(tidyLabel(el.textContent || '')));
+        if (!hasFields && !hasEntry) continue;
+        const level=Number(marker.el.tagName.slice(1)) || 6;
         if (sectionMarkers.some(other=>other!==marker && other.title!==marker.title &&
-            node.contains(other.el) && !marker.el.contains(other.el))) break;
+            node.contains(other.el) && !marker.el.contains(other.el) &&
+            (Number(other.el.tagName.slice(1)) || 6)<=level)) break;
         marker.container=node;
         break;
       }
     }
+    // 嵌套标题描述父分区中的上传等子任务；顶层物理模块保持稳定归属。
+    sectionMarkers=sectionMarkers.filter(marker=>!sectionMarkers.some(other=>other!==marker &&
+      other.container?.contains(marker.el) && (Number(other.el.tagName.slice(1)) || 6)>=2 &&
+        (Number(other.el.tagName.slice(1)) || 6)<
+        (Number(marker.el.tagName.slice(1)) || 6)));
+  }
+
+  function sectionOwner(el) {
+    const owned=sectionMarkers.filter(marker=>marker.container?.contains(el));
+    if(owned.length) return owned.sort((a,b)=>a.container===b.container ? 0 : a.container.contains(b.container)?1:-1)[0];
+    const title=tidyLabel(el?.textContent || '').replace(/\s*必填\s*$/,'').trim();
+    const destinations=sectionMarkers.filter(marker=>marker.title===title && marker.container &&
+      !marker.container.closest('nav,aside,[role="navigation"]'));
+    return destinations.length===1 ? destinations[0] : null;
+  }
+
+  function buildInteractionTree(items) {
+    const regions=new Map(),nodes=new Map();
+    for(const marker of sectionMarkers.filter(marker=>marker.container)) {
+      const id=nodeId(marker.container);
+      if(!regions.has(id)) regions.set(id,{id,title:marker.title,container:marker.container});
+    }
+    for(const {entry} of items) {
+      if(entry.context==='popup' || !entry.section) continue;
+      entry.regionId ||= `${documentId}:region:${entry.section}`;
+      if(!regions.has(entry.regionId)) regions.set(entry.regionId,{id:entry.regionId,title:entry.section});
+    }
+    for(const region of regions.values()) {
+      const parents=[...regions.values()].filter(other=>other.id!==region.id &&
+        other.container && region.container && other.container.contains(region.container));
+      const parent=parents.sort((a,b)=>a.container.contains(b.container)?1:-1)[0];
+      nodes.set(region.id,{id:region.id,parentId:parent?.id || null,kind:'region',title:region.title,
+        evidence:region.container?'dom-container':'dom-order',children:[]});
+    }
+    for(const {entry} of items) {
+      if(entry.context==='popup' || !entry.regionId) continue;
+      const field=entry.observed?.field || /^(?:input|textarea|richtext|combobox|custom-select|native-select|.*date.*|file|.*radio|.*checkbox|observed-field)$/.test(entry.kind);
+      if(field) {
+        entry.recordStableKey ||= `${entry.regionId}:record:${entry.recordIndex ?? 0}`;
+        if(!nodes.has(entry.recordStableKey)) nodes.set(entry.recordStableKey,{id:entry.recordStableKey,
+          parentId:entry.regionId,kind:'record',position:entry.recordIndex ?? 0,children:[]});
+      }
+      entry.parentNodeId=field ? entry.recordStableKey : entry.regionId;
+      const id=entry.stableKey;
+      nodes.set(id,{id,parentId:entry.parentNodeId,kind:field?'field':'entry',label:entry.label,
+        controlKind:entry.kind,operations:entry.operations || [],children:[]});
+    }
+    for(const node of nodes.values()) nodes.get(node.parentId)?.children.push(node.id);
+    return {roots:[...nodes.values()].filter(node=>node.kind==='region' && !node.parentId).map(node=>node.id),
+      nodes:[...nodes.values()]};
   }
 
   function sectionForElement(el) {
@@ -334,8 +713,8 @@
     const module = el.closest?.('.apply-module__body');
     const moduleTitle = module?.querySelector('.form-content--title-box h6,.form-content--title-box h2');
     if (moduleTitle) return tidyLabel(moduleTitle.textContent).replace(/\s*必填\s*$/, '').trim();
-    const owned=sectionMarkers.filter(marker=>marker.container?.contains(el));
-    if (owned.length) return owned.sort((a,b)=>a.container.contains(b.container)?1:-1)[0].title;
+    const owner=sectionOwner(el);
+    if(owner) return owner.title;
     let found = '';
     for (const marker of sectionMarkers) {
       const relation = marker.el.compareDocumentPosition(el);
@@ -343,16 +722,6 @@
       else if (found) break;
     }
     return found;
-  }
-
-  // 新增入口的文字本身常携带分区名称，例如“新增发明专利”。这类页面把多个
-  // 空分区并排渲染时，入口自身是最稳定的归属证据，优先于相邻标题的位置关系。
-  function repeaterSectionFromLabel(label) {
-    const compact = tidyLabel(label || '').replace(/\s/g, '');
-    if (!/^(?:\+)?(?:新增|添加|增加)/.test(compact)) return '';
-    const title=compact.replace(/^(?:\+)?(?:新增|添加|增加)/,'');
-    if(!title) return '';
-    return sectionMarkers.find(marker=>marker.title.replace(/\s/g,'')===title)?.title || title;
   }
 
   function activeSectionTitle() {
@@ -427,7 +796,7 @@
           const box=list.getBoundingClientRect();
           const options=Array.from(list.querySelectorAll('li,[role="option"],[class*="selectList__item"]'))
             .filter(item=>isVisible(item) && tidyLabel(item.textContent || ''));
-          return options.length>=2 && box.width>0 && box.height>0 && notOccluded(list,box) &&
+          return options.length>=1 && box.width>0 && box.height>0 && notOccluded(list,box) &&
             box.width<=anchor.width*1.6 && box.height<window.innerHeight*.9 &&
             Math.min(box.right,anchor.right)>Math.max(box.left,anchor.left) &&
             Math.min(Math.abs(box.top-anchor.bottom),Math.abs(box.bottom-anchor.top))<320;
@@ -437,27 +806,9 @@
         return Math.min(Math.abs(a.top-anchor.bottom),Math.abs(a.bottom-anchor.top))-
           Math.min(Math.abs(b.top-anchor.bottom),Math.abs(b.bottom-anchor.top));
       })[0];
-      const choices=Array.from(document.querySelectorAll('ul,div')).filter(list=>{
-        if (!isVisible(list) || list.closest('nav,header,[role="navigation"]')) return false;
-        // 月份／日期网格由日期事务持有，表格导航保持在原表单的记录上下文内。
-        if (list.querySelector('table')) return false;
-        let floating=false;
-        for (let node=list,depth=0;node && node!==document.body && depth<4;node=node.parentElement,depth++) {
-          if (['absolute','fixed'].includes(window.getComputedStyle(node).position)) { floating=true; break; }
-        }
-        if (!floating) return false;
-        const rows=Array.from(list.children).filter(row=>isVisible(row) &&
-          !row.querySelector('input,textarea,select') && tidyLabel(row.textContent || '').length>0 &&
-          tidyLabel(row.textContent || '').length<=60);
-        if (new Set(rows.map(row=>tidyLabel(row.textContent || ''))).size<2) return false;
-        const box=list.getBoundingClientRect();
-        return box.width>0 && box.height>0 && notOccluded(list,box) &&
-          box.width<=anchor.width*1.5 && box.height<window.innerHeight*.9 &&
-          Math.min(box.right,anchor.right)>Math.max(box.left,anchor.left) &&
-          Math.min(Math.abs(box.top-anchor.bottom),Math.abs(box.bottom-anchor.top))<240;
-      });
-      if (choices.length) return choices.sort((a,b)=>a.getBoundingClientRect().width*a.getBoundingClientRect().height-
-        b.getBoundingClientRect().width*b.getBoundingClientRect().height)[0];
+      // 匿名弹层统一使用激活前后的表面证据；常驻操作栏保留页面身份。
+      const discovered=discoverGenericPopup();
+      if(discovered) return discovered;
     }
     if (isBeisenFormPage()) {
       const searches=Array.from(document.querySelectorAll('input[placeholder="搜索"]')).filter(isVisible);
@@ -545,6 +896,11 @@
         result = false;
         break;
       }
+      if ((/hidden|clip/.test(`${style.overflow} ${style.overflowY}`) && node.getBoundingClientRect().height===0) ||
+          (/hidden|clip/.test(`${style.overflow} ${style.overflowX}`) && node.getBoundingClientRect().width===0)) {
+        result=false;
+        break;
+      }
       node = node.parentElement;
       depth += 1;
     }
@@ -559,7 +915,7 @@
     const cy = r.top + r.height / 2;
     const top = document.elementFromPoint(cx, cy);
     if (!top) return true;
-    return top === el || el.contains(top);
+    return top === el || el.contains(top) || top.contains(el);
   }
 
   function tidyLabel(text) {
@@ -721,6 +1077,8 @@
     }
     const ariaLabel = el.getAttribute("aria-label");
     if (ariaLabel) return tidyLabel(ariaLabel);
+    // 图标按钮的 title 提供其动作语义，独立于周围容器的展示文字。
+    if (el.matches('button,a,[role="button"]') && el.getAttribute('title') && !tidyLabel(el.textContent || '')) return tidyLabel(el.getAttribute('title'));
     const amLabel = amListSelectLabel(el);
     if (amLabel) return amLabel;
     if (el.matches('input,textarea,[role="combobox"]')) {
@@ -954,38 +1312,83 @@
   }
 
   function annotateRepeatedContainers(items) {
-    const signature=node=>[...new Set(Array.from(node.querySelectorAll('input:not([type=hidden]),textarea,select'))
-      .map(el=>structuredFieldCaption(el) || nearestFieldCaption(el) || deriveLabel(el))
-      .filter(label=>label && !/^(?:\d+|年|月|请选择)$/.test(label)))].sort().join('|');
+    const fields=items.filter(({entry})=>entry.context!=='popup' &&
+      !['action','card','section-entry','option-item'].includes(entry.kind));
+    const signatureCache=new Map();
+    const signature=node=>{
+      if(!signatureCache.has(node)) signatureCache.set(node,[...new Set(fields.filter(item=>node.contains(item.stateEl))
+        .map(item=>item.entry.questionLabel || item.entry.label)
+        .filter(label=>label && !/^(?:\d+|年|月|请选择)$/.test(label)))].sort().join('|'));
+      return signatureCache.get(node);
+    };
     const metadata=new Map();
     for (const {stateEl,entry} of items) {
-      if (entry.context==='popup' || !stateEl || ['action','card','section-entry'].includes(entry.kind)) continue;
+      if (entry.context==='popup' || entry.recordStableKey || !stateEl || ['action','card','section-entry'].includes(entry.kind)) continue;
       for (let node=stateEl.parentElement,depth=0;node && depth<16 && node!==document.body;node=node.parentElement,depth++) {
         if (!metadata.has(node)) {
           const controls=node.querySelectorAll('input:not([type=hidden]),textarea,select');
           const peers=controls.length>=2 ? Array.from(node.parentElement?.children || []).filter(peer=>
-            peer.tagName===node.tagName && peer.className===node.className &&
             signature(peer)===signature(node) && peer.querySelectorAll('input:not([type=hidden]),textarea,select').length>=2 &&
             sectionForElement(peer.querySelector('input,textarea,select'))===entry.section) : [];
           const fieldNames=signature(node).split('|').filter(Boolean);
-          const captions=Array.from(controls).map(el=>structuredFieldCaption(el) || nearestFieldCaption(el) || deriveLabel(el))
-            .filter(label=>label && !/日期|时间|年份|月份|^(?:年|月|请选择|\d+)$/.test(label));
-          const repeatedCaption=new Set(captions).size<captions.length;
+          const module=sectionOwner(stateEl)?.container;
+          const ownsInitialRecord=module && module!==node &&
+            module.querySelectorAll('input:not([type=hidden]),textarea,select').length===controls.length;
           const singleRecord=peers.length===1 && fieldNames.length>=2 &&
-            Array.from(node.parentElement?.children || []).some(sibling=>sibling!==node &&
-              sibling.matches('h1,h2,h3,h4,legend,[role=heading],[class*=Title],[class*=title]') &&
-              !sibling.querySelector('input,textarea,select'));
+            (ownsInitialRecord || Array.from(node.parentElement?.children || []).some(sibling=>sibling!==node &&
+              (sibling.matches('h1,h2,h3,h4,legend,[role=heading],[class*=Title],[class*=title]') ||
+                sectionMarkers.some(marker=>sibling.contains(marker.el))) &&
+              !sibling.querySelector('input,textarea,select')));
           // 第一条记录也建立物理身份，新增第二条时原字段继续归属于第一条。
-          const phoenixRecord=node.matches('.form-part') && !!node.closest('.ux-standard-form') && fieldNames.length>=2;
-          const phoenixPeers=phoenixRecord ? Array.from(document.querySelectorAll('.ux-standard-form .form-part')).filter(peer=>
-            sectionForElement(peer.querySelector('input,textarea,select'))===entry.section) : [];
-          metadata.set(node,repeatedCaption ? null : phoenixRecord ? phoenixPeers.indexOf(node) : peers.length>1 || singleRecord ? peers.indexOf(node) : null);
+          const fieldRow=observedRow(stateEl);
+          const isField=node===fieldRow || fieldRow?.contains(node) || fieldNames.length<2;
+          metadata.set(node,isField ? null : peers.length>1 || singleRecord ? peers.indexOf(node) : null);
         }
         if (metadata.get(node)!==null) {
           entry.recordIndex=metadata.get(node);
           entry.recordStableKey=nodeId(node);
           break;
         }
+      }
+    }
+  }
+
+  function annotateRepeatedFieldSequences(items) {
+    const groups=new Map();
+    for(const item of items) {
+      const {entry,stateEl}=item;
+      if(entry.context==='popup' || entry.recordStableKey ||
+        ['action','card','section-entry','option-item'].includes(entry.kind)) continue;
+      let row=observedRow(stateEl);
+      if(!row) for(let node=stateEl?.parentElement,depth=0;node && node!==document.body && depth<8;
+        node=node.parentElement,depth++) {
+        if(Array.from(node.children).some(child=>!child.contains(stateEl) &&
+          cleanCaption(ownVisibleText(child))===(entry.questionLabel || entry.label))) {row=node;break;}
+      }
+      const parent=row?.parentElement;
+      if(!parent) continue;
+      const owner=sectionOwner(stateEl);
+      const key=`${nodeId(parent)}|${owner ? nodeId(owner.container) : entry.section}`;
+      if(!groups.has(key)) groups.set(key,new Map());
+      const rows=groups.get(key);
+      if(!rows.has(row)) rows.set(row,[]);
+      rows.get(row).push(item);
+    }
+    for(const rows of groups.values()) {
+      const ordered=[...rows],labels=ordered.map(([,fields])=>[...new Set(fields.map(({entry})=>
+        entry.questionLabel || entry.label))].join('|'));
+      // 平铺字段以完整重复的题目序列建立记录，序列首行只承担稳定节点身份。
+      for(let size=2;size<=labels.length/2;size++) {
+        if(labels.length%size || new Set(labels.slice(0,size)).size<2 ||
+          !labels.every((label,index)=>label===labels[index%size])) continue;
+        for(let index=0;index<ordered.length;index++) {
+          const position=Math.floor(index/size),start=ordered[position*size][0];
+          for(const {entry} of ordered[index][1]) {
+            entry.recordIndex=position;entry.recordStableKey=`${nodeId(start)}:record-sequence`;
+            entry.recordEvidence='repeated-field-sequence';
+          }
+        }
+        break;
       }
     }
   }
@@ -1005,6 +1408,9 @@
       groups.get(key).push(item);
     }
     for(const local of groups.values()) {
+      // 单独的年/月选择器保持自身身份；复合日期的槽位由同一表单项提供。
+      const firstInput=local[0].stateEl?.matches?.('input') ? local[0].stateEl : local[0].stateEl?.querySelector?.('input');
+      if(local.length===1 && !firstInput?.closest('[class*="apply-field-"],.form-item,.el-form-item,.mFormTime')) continue;
       const caption=structuredFieldCaption(local[0].stateEl) || '';
       const award=/奖|表彰|荣誉/.test(`${local[0].entry.section} ${caption}`);
       const education=/教育|学业|就读|入学|毕业/.test(`${local[0].entry.section} ${caption}`);
@@ -1017,39 +1423,6 @@
           (education ? ['入学年份','入学月份','毕业年份','毕业月份'] :
             ['开始年份','开始月份','结束年份','结束月份'])[edge+slot] || caption;
       });
-    }
-  }
-
-  // 记录卡片的 DOM 外观各站不同，但字段锚点在校园招聘表单中相对稳定。
-  // 这层只补充还没有平台或容器证据的 recordIndex，已有标注始终优先保留。
-  function annotateSemanticRecords(items) {
-    const anchors = new Map([
-      ['教育背景', /^(?:学校|学校名称|学校全称|就读学校|毕业院校)$/],
-      ['教育经历', /^(?:学校|学校名称|学校全称|就读学校|毕业院校)$/],
-      ['实习经历', /^(?:公司|公司名称|单位|单位名称|企业名称)$/],
-      ['工作经历', /^(?:公司|公司名称|单位|单位名称|企业名称)$/],
-      ['实习/工作经历', /^(?:公司|公司名称|单位|单位名称|企业名称)$/],
-      ['项目经验', /^(?:项目名称|项目名)$/],
-      ['项目经历', /^(?:项目名称|项目名)$/],
-      ['语言能力', /^(?:语言|语种|语言类型|外语类型)$/],
-      ['获奖经历', /^(?:获奖项|获奖名称|奖项名称|奖励名称|奖项)$/],
-      ['获奖情况', /^(?:获奖项|获奖名称|奖项名称|奖励名称|奖项)$/],
-      ['校内实践经历', /^(?:组织名称|实践内容|职位名称|职务)$/],
-      ['家庭关系', /^(?:姓名|家属姓名|家庭成员姓名)$/]
-    ]);
-    for (const [section, anchor] of anchors) {
-      let activeRecord = -1;
-      let previousWasAnchor = false;
-      for (const {entry} of items.filter(item => item.entry.context !== 'popup' && item.entry.section === section)) {
-        const label = tidyLabel(entry.label || entry.placeholder || '').replace(/^请(?:输入|填写|选择)/, '').replace(/\s*[*＊]\s*$/, '');
-        const isAnchor = anchor.test(label);
-        if (isAnchor && !previousWasAnchor) activeRecord += 1;
-        previousWasAnchor = isAnchor;
-        if (activeRecord >= 0 && !Number.isInteger(entry.recordIndex) &&
-            !/^(?:\+\s*)?(?:添加|新增|增加)/.test(String(entry.label || '').replace(/\s/g, ''))) {
-          entry.recordIndex = activeRecord;
-        }
-      }
     }
   }
 
@@ -1694,6 +2067,7 @@
       }
       for (const el of all) {
         if (seen.has(el)) continue;
+        if (Array.from(el.querySelectorAll('*')).some(child=>seen.has(child))) continue;
         if (el.closest('.el-picker-panel td')) continue;
         if (el.closest('.phoenix-radio,.phoenix-select,.ud__select,.ud__picker,.throne-biz-date-range-picker-input')) continue;
         // 飞书的选择控件把可见的“请选择／当前值”包在 role=combobox 内。
@@ -1731,7 +2105,7 @@
         candidates.push({el,text});
       }
     }
-    const priority = ({text}) => repeaterSectionFromLabel(text) ? 3 :
+    const priority = ({text}) => /^(?:\+\s*)?(?:添加|新增|增加|填写|add\b)/i.test(text) ? 3 :
       /(?:教育|工作|实习|项目|校园|语言|技能|奖励|荣誉|获奖|附件|个人信息|求职意向|自我评价|自我描述).{0,16}(?:添加|新增|编辑|完善|填写|未完成)/.test(text) ? 2 : 1;
     candidates.sort((left,right) => priority(right)-priority(left));
     const chosen = [];
@@ -1755,25 +2129,44 @@
     elementStateRegistry = [];
     elementMetaRegistry = [];
     const seen = new Set();
+    const popupValueSlots=new WeakMap();
     const feishuRangeContainers = new Set();
     hiddenFiltered = 0;
     zeroSizeFiltered = 0;
     visibilityCache = new Map();
     labelForCache = null;
-    activeLayer = focusedEditorLayer();
+    genericPopup = null;
+    blockingNotice = discoverBlockingNotice();
+    genericPopup = blockingNotice?.surface || discoverGenericPopup();
+    activeLayer = blockingNotice?.surface || focusedEditorLayer();
+    // 单字段检索层属于当前字段事务，根字段和记录继续参与快照与身份回读。
+    if(!genericPopup && activeLayer && !isRecordEditorSurface(activeLayer)) genericPopup=activeLayer;
+    const selectedPopupNode=popupSelectionNode(genericPopup);
+    const selectedPopupText=visibleText(selectedPopupNode);
     buildSectionMarkers();
     const roots = collectRoots(document, [], 0);
 
     // stateEl：读取状态（checked / selected / options / aria-expanded）的节点
     // opts.targetEl：真正被点击的节点。代理场景下二者不同（如隐藏的原生 checkbox + 可见的 label）
     function pushEntry(stateEl, opts) {
+      // 已选摘要提供回读证据；摘要中的地名保持文本身份，选项来自下方实际列表。
+      if (selectedPopupNode?.contains(stateEl)) return;
       // “日期或至今”控件的展示输入与真实日历输入共享一个字段。
       // 保留日历输入作为唯一操作目标，展示代理不占用记录序号。
       if (stateEl?.closest?.('.apply-form-date-now__ipt') &&
           Array.from(stateEl.closest('.apply-form-date-now')?.querySelectorAll('.el-date-editor input') || []).some(isVisible)) return;
       const role = opts.role;
       const kind = opts.kind;
-      const targetEl = opts.targetEl || stateEl;
+      let targetEl = opts.targetEl || stateEl;
+      // 弹层切换可保留底层日历的 DOM；点击候选以最上层真实命中表面为准。
+      if(opts.context==='popup' && genericPopup?.contains(targetEl)) {
+        const box=targetEl.getBoundingClientRect();
+        if(inViewport(box,vw,vh) && box.width>0 && box.height>0) {
+          const top=document.elementFromPoint?.(box.left+box.width/2,box.top+box.height/2);
+          if(top && genericPopup.contains(top) && !targetEl.contains(top) && !stateEl.contains(top) &&
+            !top.contains(targetEl) && !top.contains(stateEl)) return;
+        }
+      }
       const entry = {
         index: "0",
         domOrder: domOrder++,
@@ -1800,15 +2193,58 @@
       }
       const labelIds=(stateEl?.getAttribute?.('aria-labelledby') || '').split(/\s+/).filter(Boolean);
       const labels=Array.from(stateEl?.labels || []).map(label=>tidyLabel(label.textContent || '')).filter(Boolean);
+      const valueControl=opts.field===true || ['textbox','combobox','radio','checkbox'].includes(role) ||
+        /^(?:input|textarea|richtext|.*select|.*date.*|file|.*radio|.*checkbox|observed-field)$/.test(kind);
+      const question=!valueControl || opts.context==='popup' || genericPopup?.contains(stateEl) ? '' : observedQuestion(stateEl);
+      const choice=/radio|checkbox/.test(`${role} ${kind}`);
+      const option=choice ? observedOption(stateEl) : '';
+      if (question) {
+        entry.questionLabel=question;
+        entry.label=/起止|时间范围|日期范围/.test(question) && /开始|结束/.test(entry.label || '') ? entry.label : question;
+        if (choice && option) entry.optionLabel=option;
+      }
       entry.observed={tag:stateEl?.tagName?.toLowerCase() || '',type:stateEl?.getAttribute?.('type') || '',
         rawValue:typeof stateEl?.value==='string' ? stateEl.value : null,
         displayText:tidyLabel(stateEl?.textContent || '').slice(0,400),
         ariaRole:stateEl?.getAttribute?.('role') || '',ariaLabel:stateEl?.getAttribute?.('aria-label') || '',
+        title:stateEl?.getAttribute?.('title') || '',
         labels,labelledBy:labelIds.map(id=>tidyLabel(stateEl.getRootNode()?.getElementById?.(id)?.textContent || '')).filter(Boolean),
         previousText:tidyLabel(stateEl?.previousElementSibling?.textContent || '').slice(0,180),
         readonly,disabled:stateEl?.disabled===true || targetEl?.getAttribute?.('aria-disabled')==='true',
+        inputMode:stateEl?.getAttribute?.('inputmode') || '',pattern:stateEl?.getAttribute?.('pattern') || '',
         expanded:stateEl?.getAttribute?.('aria-expanded') ?? null,
-        controls:stateEl?.getAttribute?.('aria-controls') || '',scrollableAncestor,capabilities};
+        controls:stateEl?.getAttribute?.('aria-controls') || '',scrollableAncestor,capabilities,
+        field:opts.field===true || !!question,
+        question:question || null,option:option || null,
+        composite:observedComposite(stateEl),
+        helpText:tidyLabel(observedRow(stateEl)?.querySelector('[class*="tip" i],[class*="help" i],[class*="hint" i]')?.textContent || '').slice(0,300),
+        bounds:{x:targetEl.getBoundingClientRect().left,y:targetEl.getBoundingClientRect().top,
+          width:targetEl.getBoundingClientRect().width,height:targetEl.getBoundingClientRect().height}};
+      const chooser=comboboxHost(stateEl);
+      if(chooser && !isMokaFormPage()) {
+        const selected=comboboxSelection(chooser);
+        const freeform=widgetDrivers.freeformCommit?.(chooser);
+        entry.observed.searchText=freeform ? '' : stateEl.matches('input,textarea') ? stateEl.value || '' : '';
+        if(freeform) entry.observed.commitEvidence={contract:freeform.contract,evidence:freeform.evidence};
+        entry.observed.selectionText=selected;
+        entry.value=selected;
+        entry.valueCommitted=!!selected;
+      }
+      entry.observed.committedValue=entry.valueCommitted===false ? '' : entry.value;
+      entry.observed.placeholder=stateEl?.getAttribute?.('placeholder') || '';
+      if(blockingNotice?.dismiss===stateEl || blockingNotice?.dismiss===targetEl) entry.noticeDismissal=true;
+      const siblingLinks=Array.from(stateEl?.parentElement?.children || []).filter(node=>node.matches('a,[role="tab"]'));
+      if(opts.context!=='popup' && !genericPopup?.contains(stateEl) &&
+        (stateEl?.matches('[role="tab"]') || stateEl?.matches('a[href^="javascript:"]') &&
+          siblingLinks.length>=2 && siblingLinks.length<=6 &&
+          !stateEl.parentElement.querySelector('input,textarea,select') &&
+          siblingLinks.every(node=>ownVisibleText(node).length>=2 && ownVisibleText(node).length<=24 &&
+            !/^(?:保存|取消|确认|添加|新增|编辑|删除|上一|下一|返回)/.test(ownVisibleText(node))))) {
+        entry.localView=true;
+        entry.viewSelected=stateEl.getAttribute('aria-selected')==='true' ||
+          /(?:^|\s)(?:active|selected|current|curr|cur|on)(?:\s|$)/i.test(String(stateEl.className || ''));
+      }
+      if(kind==='file') entry.accept=stateEl.accept || '';
       const dateInput = stateEl?.matches?.('input') ? stateEl : stateEl?.querySelector?.('input');
       const datePlaceholder = tidyLabel(dateInput?.getAttribute?.('placeholder') || '');
       if (kind === 'date' && (String(dateInput?.getAttribute?.('type') || '').toLowerCase() === 'month' ||
@@ -1816,18 +2252,30 @@
         entry.datePrecision = 'month';
       }
       if (observedMonthControls.has(stateEl) || (dateInput && observedMonthControls.has(dateInput))) entry.datePrecision='month';
-      entry.pickerBranch = opts.context === 'popup' && !!(stateEl?.hasAttribute?.('aria-expanded') ||
-        stateEl?.querySelector?.('[class*="youcejiantou"]') ||
-        Array.from(stateEl?.parentElement?.children || []).some(peer=>peer!==stateEl && peer.querySelector?.('[class*="youcejiantou"]'))) &&
-        String(opts.label || '').length < 24;
+      if(kind==='observed-field' && /时间|日期|年月/.test(question) && /^\d{4}-\d{2}$/.test(entry.value || '')) {
+        entry.datePrecision='month';
+      }
+      const branchInfo=widgetDrivers.branchInfo?.(stateEl);
+      entry.pickerBranch = opts.context === 'popup' && branchInfo?.branch===true && !!branchInfo.target && String(opts.label || '').length < 24;
+      if(opts.context==='popup') entry.observed.branchEvidence=branchInfo?.evidence || '';
+      const optionTarget=opts.context==='popup' && widgetDrivers.optionTarget?.(stateEl);
+      if(optionTarget && isVisible(optionTarget)) {
+        const labels=popupValueSlots.get(optionTarget) || new Set();
+        if(labels.has(entry.label)) return;
+        labels.add(entry.label);popupValueSlots.set(optionTarget,labels);
+        targetEl=optionTarget;
+        const box=targetEl.getBoundingClientRect();
+        entry.observed.bounds={x:box.left,y:box.top,width:box.width,height:box.height};
+      }
       entry.widgetFamily = widgetDrivers.classify({
         kind, role, tagName: stateEl?.tagName, editable: stateEl ? isEditableEl(stateEl) : false
       });
       if (['input','textarea','combobox'].includes(kind) && stateEl?.matches?.('input,textarea') &&
           stateEl.closest('.form-item--phoenix')) entry.textCommitMode='page-world';
-      const repeaterSection = repeaterSectionFromLabel(opts.label);
-      const section = opts.section || repeaterSection || sectionForElement(targetEl || stateEl);
+      const owner=sectionOwner(targetEl || stateEl);
+      const section = owner?.title || opts.section || sectionForElement(targetEl || stateEl);
       if (section) entry.section = section;
+      if(owner) {entry.regionId=nodeId(owner.container);entry.regionEvidence='dom-container';}
       // 飞书的自我评价 textarea 常只有通用占位“请输入”，字段标题位于分区头部。
       // 该分区仅承载这一项文本，因此使用分区标题恢复稳定字段语义。
       if (isFeishuJobsPage() && /^(?:请输入|请填写)$/.test(String(entry.label || '').trim()) &&
@@ -1847,6 +2295,8 @@
         }
       }
       let localRequired = !!stateEl?.closest?.('.el-form-item.is-required,.ant-form-item-required,[aria-required="true"]');
+      const caption=observedRow(stateEl)?.querySelector('dt,legend,[class*="caption" i]');
+      if (caption && /[*＊]/.test(caption.textContent || '')) localRequired=true;
       const formilyRow = stateEl?.closest?.('.ud-formily-item');
       const formilyCaption = formilyRow && Array.from(formilyRow.querySelectorAll('.ud-formily-item-label')).find(node =>
         node.closest('.ud-formily-item') === formilyRow);
@@ -1868,19 +2318,36 @@
           stateEl.closest('.my-list-item')?.querySelector('.header-title .icon-bitian') ||
           mokaRequired || localRequired) entry.required = true;
       if (stateEl) {
-        const row=stateEl.closest('[class*="apply-field-"],.form-item,.el-form-item,.ant-form-item,.ud-formily-item,[data-field-id]');
+        const row=observedRow(stateEl) || stateEl.closest('[class*="apply-field-"],.form-item,.el-form-item,.ant-form-item,.ud-formily-item,[data-field-id]');
+        if(kind==='radio' && /^(?:是否有|有无)/.test(question || '') &&
+          /选择.{0,8}是.{0,24}(?:添加|新增).{0,12}(?:数据|记录|经历)/.test(tidyLabel(row?.textContent || ''))) entry.regionGate=true;
         const described=(stateEl.getAttribute('aria-describedby') || '').split(/\s+/).map(id=>document.getElementById(id)).filter(Boolean);
-        const errors=[...described,...(row?.querySelectorAll('.form-item__error,.el-form-item__error,.ant-form-item-explain-error,[role="alert"],[class*="error" i],[class*="invalid" i]') || [])];
-        const error=errors.find(node=>isVisible(node) && /必填|未填写|不能为空|错误|格式|最多|至少|无效|required|invalid|exceed/i.test(tidyLabel(node.textContent || '')));
-        if (error) entry.validationError=tidyLabel(error.textContent).slice(0,160);
+        const errors=[...described,...(row?.querySelectorAll('.form-item__error,.el-form-item__error,.ant-form-item-explain-error,.inputTip,[role="alert"],[class*="error" i],[class*="invalid" i]') || [])];
+        const blankProjection=!String(stateEl.value || stateEl.textContent || '').trim() ||
+          /^(?:请选择|请输入|请填写)/.test(tidyLabel(stateEl.value || stateEl.textContent || ''));
+        const error=errors.find(node=>isVisible(node) &&
+          (/必填|未填写|不能为空|不能大于|不得超过|错误|格式|最多|至少|无效|required|invalid|exceed/i.test(tidyLabel(node.textContent || '')) ||
+            blankProjection && node.matches('.inputTip') && /^请(?:选择|填写|输入)/.test(tidyLabel(node.textContent || ''))));
+        if (error) {
+          const message=tidyLabel(error.textContent),limit=message.match(/(?:长度)?(?:不能大于|不得超过)\s*(\d+)/);
+          // 长度限制作为确定约束回读；修正值已满足上限时，旧提示等待下次保存刷新。
+          if(!limit || String(stateEl.value || '').length>Number(limit[1])) entry.validationError=message.slice(0,160);
+        }
         if (stateEl.getAttribute('aria-invalid')==='true' && !entry.validationError) entry.validationError='控件报告校验失败';
       }
       if (opts.context) entry.context = opts.context;
+      if (opts.clickMode) entry.clickMode = opts.clickMode;
+      // javascript 链接的默认动作由页面环境处理，使用浏览器点击通道完成激活。
+      if (/^javascript\s*:/i.test(stateEl?.closest?.('a[href]')?.getAttribute('href') || '')) {
+        entry.clickMode = 'trusted-pointer';
+      }
       if ((kind === 'date' && stateEl?.closest?.('.ud__picker')) ||
           opts.context === 'popup' && stateEl?.closest?.('.ud__picker-dropdown')) {
         entry.clickMode = 'trusted-pointer';
       }
       if (opts.calendarDate) entry.calendarDate = opts.calendarDate;
+      const titledDate=stateEl?.getAttribute?.('title')?.match(/^(\d{4})[年/-](\d{1,2})[月/-](\d{1,2})日?$/);
+      if(titledDate && opts.context==='popup') entry.calendarDate=`${titledDate[1]}-${titledDate[2].padStart(2,'0')}-${titledDate[3].padStart(2,'0')}`;
       if (kind==='custom-select' && stateEl?.closest?.('.phoenix-select') ||
           opts.context==='popup' && activeLayer && transactionTrigger?.closest?.('.phoenix-select') &&
           !stateEl.closest('.constant-main-selector-container,.area-selector-container')) {
@@ -1920,9 +2387,8 @@
       if (stateEl && (role === "checkbox" || role === "radio")) {
         entry.checked = readChoiceChecked(stateEl);
         if (role === 'radio') {
-          const group=stateEl.closest('[role="radiogroup"],.ud__radio-group,.phoenix-radio-group,.ud-formily-item,fieldset');
-          if (group) entry.choiceGroup=`radio-group-${Array.from(document.querySelectorAll(
-            '[role="radiogroup"],.ud__radio-group,.phoenix-radio-group,.ud-formily-item,fieldset')).indexOf(group)}`;
+          const group=stateEl.closest('[role="radiogroup"],.ud__radio-group,.phoenix-radio-group,.ud-formily-item,fieldset') || observedRow(stateEl);
+          if (group) entry.choiceGroup=`radio-group:${nodeId(group)}:${stateEl.name || question}`;
         }
       }
       if (kind === 'custom-radio') {
@@ -1933,6 +2399,7 @@
       if (stateEl?.matches('input[type="radio"]')) {
         entry.optionValue = String(stateEl.value || "").slice(0, 40);
       }
+      if (option && choice) entry.optionLabel=option;
       if (stateEl && role === "option" && stateEl.selected !== undefined) {
         entry.selected = stateEl.selected;
       }
@@ -1996,8 +2463,11 @@
 
     roots.forEach((root) => {
       root.querySelectorAll(interactiveSelector).forEach((el) => {
-        if (activeLayer && !activeLayer.contains(el)) return;
+        if (activeLayer && (blockingNotice || isRecordEditorSurface(activeLayer)) && !activeLayer.contains(el)) return;
         if (seen.has(el)) return;
+        // 上传字段的只读文件名槽与 file input 共用一个事实和一个身份。
+        if(el.matches('input:not([type="file"])') && el.readOnly &&
+          observedRow(el)?.querySelector('input[type="file"]')) {seen.add(el);return;}
         // Element UI 联想框的外层 div 带 combobox 语义，内部 input 才是真正
         // 可输入的控件。只采集 input，保留 TYPE_TEXT → 候选选择事务。
         if (el.matches?.('.el-autocomplete[role="combobox"]') &&
@@ -2007,7 +2477,7 @@
         }
         // 飞书的学校检索器把真正可写的 input 套在 role=combobox 容器里。
         // 采集内层输入框即可形成“填写关键词 → 选择结果”的单一事务。
-        if (isFeishuJobsPage() && el.matches?.('[role="combobox"]')) {
+        if (el.matches?.('[role="combobox"]')) {
           // 飞书经常在 combobox 中保留一个零尺寸的 React 状态 input；它并不是
           // 用户可操作的输入框。只有内层确实可见且有尺寸时，才由内层输入承接
           // 扫描；否则保留 combobox 本身，作为学历、语言等选择器的点击目标。
@@ -2017,13 +2487,14 @@
               const rect = node.getBoundingClientRect();
               return rect.width > 0 && rect.height > 0;
             });
-          if (visibleEditor) {
+          if (visibleEditor && !(isMokaFormPage() && /^(?:年|月)$/.test(visibleEditor.getAttribute('placeholder') || ''))) {
             seen.add(el);
             return;
           }
         }
         if (el.matches('input[type="file"]')) {
           seen.add(el);
+          if (!isVisible(el.parentElement)) return;
           const label = fileFieldLabel(el);
           pushEntry(el, {
             role: 'button', kind: 'file', targetEl: el, label, value: fileFieldValue(el),
@@ -2065,8 +2536,9 @@
 
         const role = deriveRole(el);
         let kind = deriveKind(el, role);
-        const feishuHost = feishuComboboxHost(el);
-        const label = feishuHost ? deriveLabel(feishuHost) || deriveLabel(el) : deriveLabel(el);
+        const chooserHost = comboboxHost(el);
+        const label = chooserHost ? deriveLabel(chooserHost) || deriveLabel(el) : deriveLabel(el);
+        if(chooserHost && el.matches('input,textarea') && !el.readOnly) kind='combobox';
         // 学校名称通常是“输入关键词 → 选择联想结果”的控件。部分 ATS 没有
         // aria-autocomplete 或专用容器，外观会退化成普通 text input；根据字段
         // 语义将其归入 autocomplete 协议，保证输入后仍会等待候选项确认。
@@ -2080,8 +2552,9 @@
         const disabled = el.disabled === true || el.getAttribute("aria-disabled") === "true";
         // 浮层里的选项无论走哪条采集路径，都要带上 popup 标记：
         // 它对 Jev 是"点了就消失，要立刻做决定"的信号。
-        const isPopupItem = !el.closest('.layui-layer-btn') && !isFeishuNavigationLayer(el) && ["option", "menuitem", "radio", "checkbox", "textbox", "button"].includes(role) &&
-          (inPopupContainer(el) || !!activeLayer?.contains(el));
+        const isPopupItem = !el.closest('.layui-layer-btn') && !isFeishuNavigationLayer(el) &&
+          (["option", "menuitem", "radio", "checkbox", "textbox", "button"].includes(role) &&
+          (inPopupContainer(el) || !!activeLayer?.contains(el)) || genericPopup!==el && !!genericPopup?.contains(el));
         pushEntry(el, {
           role,
           kind,
@@ -2099,10 +2572,69 @@
       });
     });
 
+    // 原生语义之外的可见投影继续进入候选：独立 caption + 展示槽即可建立字段
+    // 假设。点击后用新观察验证假设，组件类名仅作为执行优化线索。
+    for (const root of roots) {
+      for (const el of root.querySelectorAll('span,em,i,b,dd,div,li,td')) {
+        if (seen.has(el) || !isVisible(el) || activeLayer && (blockingNotice || isRecordEditorSurface(activeLayer)) && !activeLayer.contains(el)) continue;
+        if (el.querySelector(interactiveSelector) || Array.from(el.children).some(child=>seen.has(child))) continue;
+        const text=ownVisibleText(el);
+        if (!text || text.length>100) continue;
+        const rect=el.getBoundingClientRect();
+        if (!rect.width || !rect.height) continue;
+        const inPopup=!!genericPopup?.contains(el);
+        // 日历格子的完整日期在父级 title/ARIA 上；统一由格子本体承接点击。
+        const calendarCell=inPopup && el.closest('td[title],[role="gridcell"][aria-label]');
+        if(calendarCell && calendarCell!==el) continue;
+        if(!inPopup && el.closest('.inputTip,[role="alert"],.form-item__error,.el-form-item__error,.ant-form-item-explain-error')) continue;
+        const question=inPopup ? '' : observedQuestion(el);
+        const style=window.getComputedStyle(el);
+        const pointer=style.cursor==='pointer' || el.hasAttribute('onclick') || el.hasAttribute('tabindex');
+        const projection=question && /^(请选择|请填写|未选择|YYYY|年$|月$)/.test(text);
+        if(projection && !pointer && !inPopup &&
+          Array.from(el.children).filter(child=>isVisible(child) && ownVisibleText(child)).length>1) continue;
+        // 同一字段已有真实控件时，静态提示文字作为说明保留，由真实控件承接操作。
+        const row=!inPopup ? observedRow(el) : null;
+        if(row && el.closest('[class*="help" i],[class*="hint" i],[class*="desc" i],[role="note"]') &&
+          !pointer && !el.matches('[role="combobox"],[tabindex]')) continue;
+        if(row && !pointer && Array.from(row.querySelectorAll(interactiveSelector)).some(control=>
+          control!==el && !el.contains(control) && isVisible(control) && seen.has(control))) continue;
+        const popupLeaf=inPopup && !el.querySelector('span,em,b,li,td,a,button') && text.length<=60;
+        // 容器入口由卡片采集器统一处理，字段展示槽与弹层叶子保留在此处。
+        if (!inPopup && !question && el.matches(CARD_TAG_SELECTOR)) continue;
+        if (!pointer && !projection && !popupLeaf) continue;
+        // 字段旁的帮助符号提供说明，填写目标来自同一行的真实控件。
+        if(!inPopup && /^[?？ⓘ]$/.test(text)) continue;
+        if (el.closest('dt,label,legend,[class*="form-item-label"]') && !inPopup) continue;
+        if (!inPopup && el.closest('nav,header,footer') && !pointer) continue;
+        // 同一个展示槽常套多层 span；选择最深的实际文字或按钮。
+        if (!calendarCell && Array.from(el.children).some(child=>isVisible(child) && ownVisibleText(child)===text)) continue;
+        seen.add(el);
+        const entryTitle=sectionMarkers.find(marker=>marker.title===cleanCaption(text))?.title;
+        const field=!!question && !/^(?:\+\s*)?(?:新增|添加|编辑|删除|取消|保存)/.test(text);
+        if(field && !inPopup && [...inView,...offView].some(item=>{
+          if(item.stateEl?.contains(el) || item.targetEl?.contains(el)) return true;
+          const chooser=el.closest('[role="combobox"]');
+          if(chooser?.contains(item.stateEl)) return true;
+          if(row && observedRow(item.stateEl)===row && row.querySelectorAll('[role="combobox"]').length===1 &&
+            /^(?:combobox|custom-select|native-select)$/.test(item.entry.kind)) return true;
+          if(row && observedRow(item.stateEl)===row && item.entry.kind==='file') return true;
+          return item.entry.kind==='feishu-date-range' &&
+            observedRow(item.stateEl)===row;
+        })) continue;
+        pushEntry(el,{role:field?'combobox':inPopup?'option':'button',
+          kind:field?'observed-field':entryTitle?'section-entry':inPopup?'option-item':'action',
+          label:field?question:text,value:field?text:'',field,
+          clickMode:field?'trusted-pointer':undefined,
+          operations:['CLICK'],context:inPopup?'popup':undefined,
+          section:entryTitle || undefined,offscreen:!inViewport(rect,vw,vh)});
+      }
+    }
+
     // 卡片式可点容器：部分分段列表页整页只有卡片入口，
     // 每个分段是一张可点的 div，只认原生控件会得到 0 个元素，Jev 无从下手。
     collectClickableCards(roots, seen, interactiveSelector, inView.length + offView.length === 0).forEach((el) => {
-      if (activeLayer && !activeLayer.contains(el)) return;
+      if (activeLayer && (blockingNotice || isRecordEditorSurface(activeLayer)) && !activeLayer.contains(el)) return;
       seen.add(el);
       const r = el.getBoundingClientRect();
       const label = tidyLabel(el.innerText || el.textContent || '').slice(0, 80);
@@ -2153,6 +2685,40 @@
     // 对“包含同一 input 的 custom-select + input”只保留外层选择器；
     // 学校/专业的可输入联想框没有 custom-select 外层，仍完整保留。
     const collectedEntries = [...inView, ...offView];
+    // 上传入口和隐藏 file input 共享一个逻辑字段；独立删除、更新等命令保留自身身份。
+    const uploadProjections=new Set();
+    for(const file of collectedEntries.filter(item=>item.entry.kind==='file')) {
+      const area=fileUploadArea(file.stateEl),row=observedRow(file.stateEl);
+      for(const item of collectedEntries) {
+        if(item===file || item.entry.context==='popup' ||
+          !['action','card','observed-field'].includes(item.entry.kind) || !item.entry.operations?.length ||
+          tidyLabel(item.entry.questionLabel || item.entry.label)!==tidyLabel(file.entry.questionLabel || file.entry.label)) continue;
+        const command=tidyLabel(item.stateEl?.getAttribute?.('aria-label') || item.stateEl?.textContent || '');
+        if(/^(?:删除|移除|更新|更换|取消|重试|delete|remove|update|replace|cancel|retry)$/i.test(command)) continue;
+        const sameSurface=area?.contains(item.stateEl) || item.stateEl?.contains(file.stateEl) ||
+          row && observedRow(item.stateEl)===row;
+        if(sameSurface && item.entry.operations?.every(operation=>operation==='CLICK')) uploadProjections.add(item);
+      }
+    }
+    for(const bucket of [inView,offView]) {
+      for(let i=bucket.length-1;i>=0;i--) if(uploadProjections.has(bucket[i])) bucket.splice(i,1);
+    }
+    const popupOptions=new Map(),duplicatePopup=new Set();
+    for(const item of collectedEntries) {
+      if(item.entry.context!=='popup' || !item.entry.operations?.includes('CLICK') ||
+        item.entry.operations.includes('TYPE_TEXT')) continue;
+      const host=item.stateEl?.closest?.('[role="option"],[role="menuitem"],li');
+      if(!host || !genericPopup?.contains(host) || tidyLabel(host.textContent || '')!==tidyLabel(item.entry.label)) continue;
+      const previous=popupOptions.get(host);
+      if(previous) {
+        const preferCurrent=item.stateEl===host && previous.stateEl!==host;
+        duplicatePopup.add(preferCurrent ? previous : item);
+        if(preferCurrent) popupOptions.set(host,item);
+      } else popupOptions.set(host,item);
+    }
+    if(duplicatePopup.size) for(const bucket of [inView,offView]) {
+      for(let i=bucket.length-1;i>=0;i--) if(duplicatePopup.has(bucket[i])) bucket.splice(i,1);
+    }
     const duplicateInputs = new Set();
     for (const outer of collectedEntries) {
       if (outer.entry.kind !== 'custom-select' || !outer.stateEl?.querySelector) continue;
@@ -2172,10 +2738,27 @@
     // 这样执行器滚动某个年份控件后，它不会因为变成“视口内第一项”而从毕业年份漂移成入学年份。
     const allEntriesInDomOrder = [...inView, ...offView].sort((a, b) =>
       (a.entry.domOrder ?? 0) - (b.entry.domOrder ?? 0));
+    const dateRows=new Map();
+    for(const item of allEntriesInDomOrder) {
+      if(item.entry.context==='popup' || item.entry.kind!=='observed-field' ||
+        !/时间|日期/.test(item.entry.questionLabel || '')) continue;
+      const row=observedRow(item.stateEl);
+      if(!row) continue;
+      if(!dateRows.has(row)) dateRows.set(row,[]);
+      dateRows.get(row).push(item);
+    }
+    for(const items of dateRows.values()) if(items.length===2 &&
+      items[0].entry.questionLabel===items[1].entry.questionLabel &&
+      !/开始|结束|起始|终止/.test(items[0].entry.questionLabel)) {
+      items.forEach((item,index)=>{
+        item.entry.label=`${item.entry.questionLabel}（${index ? '结束' : '开始'}）`;
+        item.entry.observed.rangeEndpoint=index ? 'end' : 'start';
+      });
+    }
+    annotateRepeatedFieldSequences(allEntriesInDomOrder);
     annotateRepeatedContainers(allEntriesInDomOrder);
     annotateMokaRecordMetadata(allEntriesInDomOrder);
     platformDrivers.annotateRecords(allEntriesInDomOrder, location.hostname, document);
-    annotateSemanticRecords(allEntriesInDomOrder);
     annotateLocalDateParts(allEntriesInDomOrder);
     annotateFieldGroups(allEntriesInDomOrder);
 
@@ -2184,21 +2767,49 @@
       entry.documentId = documentId;
       const editor=stateEl?.closest?.('[role="dialog"],.el-dialog,.ant-modal,[class*="drawer"]');
       entry.surfaceId = nodeId(editor && isRecordEditorSurface(editor) ? editor : stateEl?.closest?.('form') || document.documentElement);
-      entry.nodeKey = nodeId(entry.kind === 'custom-select' ? stateEl?.closest?.('.phoenix-select') || stateEl || targetEl : stateEl || targetEl);
+      entry.nodeKey = entry.kind==='file' ? `${nodeId(fileUploadArea(stateEl))}:upload` :
+        nodeId(comboboxHost(stateEl) || (entry.kind === 'custom-select' ? stateEl?.closest?.('.phoenix-select') : null) || stateEl || targetEl);
       entry.stableKey = widgetDrivers.stableKey(entry,entry.nodeKey);
-      if (entry.context === 'popup' && transactionTrigger?.isConnected) entry.popupOwnerKey = nodeId(transactionTrigger);
+      entry.logicalFieldKey=entry.stableKey;
+      if (genericPopup!==stateEl && genericPopup?.contains(stateEl)) entry.context='popup';
+      if (entry.context === 'popup' && selectedPopupText) entry.popupSelection=selectedPopupText;
+      const region=sectionOwner(stateEl || targetEl);
+      if (region) entry.regionId=nodeId(region.container);
+      entry.parentNodeId=entry.recordStableKey || entry.regionId || entry.surfaceId;
       let record = stateEl?.closest?.('[data-record-id],[data-record-key],.resumeContent,.record-item,.experience-item');
       if (!record && /^(编辑|修改)$/.test(tidyLabel(entry.label))) {
         for (let node=stateEl?.parentElement,depth=0;node && depth<7 && node!==document.body;node=node.parentElement,depth++) {
           const commands=Array.from(node.querySelectorAll('button,a,[role="button"],.resume-btn')).filter(command=>
             /^(编辑|修改)$/.test(tidyLabel(command.textContent || '')));
           if(commands.length>1) break;
-          if(commands.length===1 && tidyLabel(node.textContent).length>10) {record=node;break;}
+          if(commands.length===1 && !node.matches('h1,h2,h3,h4,h5,h6') &&
+            ownVisibleText(node).length>10) {record=node;break;}
         }
       }
       if (record) entry.recordStableKey = nodeId(record);
-      if (/编辑|修改/.test(entry.label || '') && record) entry.summaryText = tidyLabel(record.textContent).slice(0,12000);
-      if (stateEl?.maxLength > 0) entry.maxLength = stateEl.maxLength;
+      entry.parentNodeId=entry.recordStableKey || entry.regionId || entry.surfaceId;
+      if (/编辑|修改/.test(entry.label || '') && record &&
+        !Array.from(record.querySelectorAll('input:not([type="hidden"]),textarea,select,[contenteditable="true"]'))
+          .some(isVisible)) entry.summaryText = ownVisibleText(record).slice(0,12000);
+      const limitHint=[stateEl?.getAttribute?.('placeholder'),entry.observed?.helpText,entry.validationError,
+        /^(?:字数|请|最多|限)/.test(String(stateEl?.value || '')) ? stateEl.value : ''].filter(Boolean).join(' ');
+      const declaredLimit=limitHint.match(/(?:字数控制在|不超过|最多|上限|不多于)\s*(\d+)\s*(?:个)?(?:汉字|字|字符)/) ||
+        limitHint.match(/(\d+)\s*(?:个)?(?:汉字|字|字符)以内/) ||
+        limitHint.match(/(?:长度)?(?:不能大于|不得超过)\s*(\d+)/);
+      const limits=[stateEl?.maxLength,declaredLimit ? Number(declaredLimit[1]) : 0].filter(limit=>limit>0);
+      if(limits.length) entry.maxLength=Math.min(...limits);
+    }
+
+    // 所有根字段身份生成后，再把弹层投影绑定到真实根字段。
+    if(transactionTrigger?.isConnected) {
+      const owner=allEntriesInDomOrder.find(item=>item.entry.context!=='popup' &&
+        (item.stateEl===transactionTrigger || item.targetEl===transactionTrigger || transactionTrigger.contains(item.stateEl) ||
+          comboboxHost(item.stateEl)===comboboxHost(transactionTrigger) && comboboxHost(transactionTrigger)));
+      const controlledIds=new Set([transactionTrigger,...(transactionTrigger.querySelectorAll?.('[aria-controls],[aria-owns]') || [])]
+        .flatMap(node=>`${node.getAttribute('aria-controls') || ''} ${node.getAttribute('aria-owns') || ''}`.split(/\s+/)).filter(Boolean));
+      const surfaces=[genericPopup,...Array.from(controlledIds,id=>document.getElementById(id))].filter(Boolean);
+      if(owner) for(const {entry,stateEl} of allEntriesInDomOrder) if(entry.context==='popup' &&
+        surfaces.some(surface=>surface.contains(stateEl))) entry.popupOwnerKey=owner.entry.stableKey;
     }
 
     // 视口内的排在前面，超量时优先保留视口内的字段
@@ -2220,6 +2831,24 @@
       omittedBySection:omitted.filter(item=>item.entry.context!=='popup').reduce((counts,item)=>{
         const section=item.entry.section || '当前表单';counts[section]=(counts[section] || 0)+1;return counts;
       },{}),complete:omitted.length===0};
+    const unobservedFields=[];
+    for (const row of document.querySelectorAll(OBSERVED_ROW)) {
+      if (!isVisible(row) || genericPopup?.contains(row)) continue;
+      const question=observedQuestion(row.querySelector(OBSERVED_CONTROL) || row.querySelector('dd') || row);
+      if (!question || allEntriesInDomOrder.some(item=>row.contains(item.stateEl) && item.entry.observed?.field)) continue;
+      if (row.querySelector('dd') && ownVisibleText(row.querySelector('dd'))) {
+        const owner=sectionOwner(row);
+        unobservedFields.push({id:nodeId(row),section:owner?.title || sectionForElement(row),
+          ...(owner ? {regionId:nodeId(owner.container)} : {}),label:question,
+          text:ownVisibleText(row.querySelector('dd')).slice(0,200),reason:'可见定义项尚无可操作目标'});
+      }
+    }
+    const feedback=Array.from(document.querySelectorAll('[role="alert"],[role="status"],[aria-live],body *'))
+      .filter(el=>el.childElementCount===0 && isVisible(el)).map(ownVisibleText)
+      .filter(text=>text.length<160 && /^(?:请.{0,30}(完善|完成)|保存失败|操作失败|错误[:：]|请先)/.test(text));
+    const interactionTree=buildInteractionTree(allEntriesInDomOrder);
+    pageObservation={feedback:[...new Set(feedback)].slice(0,10),interactionTree,regions:interactionTree.nodes.filter(node=>node.kind==='region').map(node=>({id:node.id,parentId:node.parentId,title:node.title,
+      evidence:node.evidence,targets:allEntriesInDomOrder.filter(item=>item.entry.regionId===node.id).map(item=>item.entry.stableKey)})),unobservedFields};
     const out = [];
     for (const { stateEl, targetEl, entry } of ordered) {
       entry.index = String(out.length + 1);
@@ -2231,6 +2860,24 @@
       elementRegistry.push(targetEl);
       elementStateRegistry.push(stateEl);
       elementMetaRegistry.push(entry);
+    }
+
+    // 保留最近一次有归属的弹层命中结构，供本地导出定位关闭后的点击问题。
+    // 诊断对象与 Snapshot / Jev 请求分离，大小固定为当前弹层预算。
+    const popupDiagnostic=ordered.filter(item=>item.entry.context==='popup' && item.entry.popupOwnerKey);
+    if(popupDiagnostic.length) {
+      const owners=globalThis.__jevPopupDiagnostics ||= new Map();
+      const owner=popupDiagnostic[0].entry.popupOwnerKey;
+      owners.delete(owner);
+      owners.set(owner,popupDiagnostic.filter(item=>item.entry.popupOwnerKey===owner).map(({entry,stateEl,targetEl})=>({
+      label:entry.label,ownerKey:entry.popupOwnerKey,pickerBranch:entry.pickerBranch,
+      evidence:entry.observed.branchEvidence,targetTag:targetEl.tagName,targetClass:String(targetEl.className || ''),
+      ancestors:Array.from((function*(){for(let node=stateEl,i=0;node && i<5;node=node.parentElement,i++) yield node;})())
+        .map(node=>({tag:node.tagName,cls:String(node.className || ''),role:node.getAttribute('role'),
+          expanded:node.getAttribute('aria-expanded'),children:Array.from(node.children).slice(0,6)
+            .map(child=>({tag:child.tagName,cls:String(child.className || '')}))}))
+      })));
+      while(owners.size>16) owners.delete(owners.keys().next().value);
     }
 
     return out;
@@ -2376,6 +3023,9 @@
   // 部分环境（含测试用的 jsdom）没有 scrollIntoView，缺了不该让点击失败
   function safeScrollIntoView(el) {
     if (typeof el.scrollIntoView !== "function") return;
+    const rect=el.getBoundingClientRect();
+    if(rect.top>=8 && rect.left>=0 && rect.bottom<=window.innerHeight-8 && rect.right<=window.innerWidth &&
+      notOccluded(el,rect)) return;
     try {
       el.scrollIntoView({ behavior: "instant", block: "center", inline: "center" });
     } catch (_) {
@@ -2454,7 +3104,7 @@
     })[0] || el;
   }
 
-  function trustedClickPoint(index) {
+  function trustedClickPoint(index, optionIntent) {
     const pos = parseInt(index, 10) - 1;
     const el = elementRegistry[pos];
     const meta = elementMetaRegistry[pos] || {};
@@ -2465,9 +3115,13 @@
     safeScrollIntoView(el);
     const stateEl=elementStateRegistry[pos] || el;
     const phoenixHost=meta.kind==='custom-select' && stateEl.closest?.('.phoenix-select');
-    if (meta.context !== 'popup') transactionTrigger=stateEl.closest?.('.phoenix-select') || stateEl;
+    if (meta.context !== 'popup') {
+      captureTransactionSurface();
+      transactionTrigger=comboboxHost(stateEl) || stateEl.closest?.('.phoenix-select') || stateEl;
+    }
     const phoenixArrow=phoenixHost && Array.from(phoenixHost.querySelectorAll('.phoenix-select__switchArrow')).find(isVisible);
-    const clickTarget = phoenixArrow || (isFeishuJobsPage()
+    const optionTarget=meta.context==='popup' && widgetDrivers.optionTarget?.(stateEl,optionIntent);
+    const clickTarget = optionTarget || phoenixArrow || (isFeishuJobsPage()
       ? feishuCardPointerTarget(el, meta.clickLabel || meta.label, meta.label)
       : isMokaFormPage() && meta.context === 'popup'
         ? mokaPopupOptionTarget(el, meta.label)
@@ -2477,6 +3131,7 @@
     if (!rect.width || !rect.height || !Number.isFinite(rect.left) || !Number.isFinite(rect.top)) {
       return {ok:false,reason:'控件未处于可点击布局'};
     }
+    if (!notOccluded(clickTarget,rect)) return {ok:false,reason:'真实点击目标被遮挡，已保留当前字段'};
     return {
       ok:true,
       clickMode:'trusted-pointer',
@@ -2701,7 +3356,7 @@
   }
 
   // === 执行 click ===
-  async function executeClick(index) {
+  async function executeClick(index, optionIntent) {
     const pos = parseInt(index, 10) - 1;
     const el = elementRegistry[pos];
     if (!el) return { ok: false, reason: `元素 ${index} 不在注册表` };
@@ -2709,8 +3364,11 @@
     const stateEl = elementStateRegistry[pos] || el;
     const meta = elementMetaRegistry[pos] || {};
     const wasChecked = readChoiceChecked(stateEl);
-    if (meta.context !== 'popup') transactionTrigger=stateEl.closest?.('.phoenix-select') || stateEl;
-    if (meta.kind === 'section-entry' || /^(编辑|修改|新增|添加|增加)/.test(tidyLabel(meta.label))) selectedSection=meta.section || tidyLabel(meta.label);
+    if (meta.context !== 'popup') {
+      captureTransactionSurface();
+      transactionTrigger=comboboxHost(stateEl) || stateEl.closest?.('.phoenix-select') || stateEl;
+    }
+    if (meta.kind === 'section-entry' || /^(?:\+\s*)?(编辑|修改|新增|添加|增加|填写)/.test(tidyLabel(meta.label))) selectedSection=meta.section || tidyLabel(meta.label);
     if (el.disabled || el.getAttribute("aria-disabled") === "true") {
       return { ok: false, reason: `元素 ${index} 已禁用` };
     }
@@ -2828,15 +3486,20 @@
     const phoenixArrow = meta.kind === 'custom-select'
       ? Array.from(stateEl?.closest?.('.phoenix-select')?.querySelectorAll('.phoenix-select__switchArrow') || [])
         .find(isVisible) : null;
-    if (meta.context !== 'popup' && !activeLayer?.contains(stateEl)) transactionTrigger=stateEl.closest?.('.phoenix-select') || stateEl;
-    const clickTarget = mokaClearTarget || beisenChoiceTarget || phoenixArrow || leafTarget || feishuHitTarget || el;
+    if (meta.context !== 'popup' && !activeLayer?.contains(stateEl)) transactionTrigger=comboboxHost(stateEl) || stateEl.closest?.('.phoenix-select') || stateEl;
+    const optionTarget=meta.context==='popup' && widgetDrivers.optionTarget?.(stateEl,optionIntent);
+    const clickTarget = mokaClearTarget || beisenChoiceTarget || optionTarget || phoenixArrow || leafTarget || feishuHitTarget || el;
     const r = clickTarget.getBoundingClientRect();
     if (!notOccluded(clickTarget, r)) {
       // 不强制失败，因为元素可能合法地被父级覆盖；记录但继续
       console.warn(`${TAG} click 目标可能被遮挡`, index);
     }
-    if (!mokaClearTarget) safeScrollIntoView(clickTarget);
-    const singleActivation = (stateEl?.closest?.('.phoenix-select') &&
+    if (!mokaClearTarget) {
+      safeScrollIntoView(clickTarget);
+      // 滚动触发的页面处理器先完成，再激活控件，避免刚展开的选项被滚动事件收起。
+      await sleep(100);
+    }
+    const singleActivation = meta.kind==='observed-field' || (stateEl?.closest?.('.phoenix-select') &&
       meta.kind === 'custom-select') || stateEl?.closest?.('.ud__picker');
     if (!mokaClearTarget && !singleActivation && typeof clickTarget.focus === "function") {
       let focusDelivered = false;
@@ -2881,8 +3544,14 @@
         clickTarget.dispatchEvent(new MouseEvent("mouseup", opts));
       }
     }
+    const choiceOwner=comboboxHost(transactionTrigger);
+    const optionHost=clickTarget.closest?.('[role="option"],[role="menuitem"],li');
+    const choiceReceipt=meta.context==='popup' && choiceOwner && genericPopup?.contains(optionHost) &&
+      tidyLabel(optionHost.textContent || '')===tidyLabel(meta.label) ?
+      {label:tidyLabel(meta.label),popup:genericPopup} : null;
     if (typeof clickTarget.click === 'function') clickTarget.click();
     else clickTarget.dispatchEvent(new MouseEvent('click', opts));
+    if(choiceReceipt) comboboxOptionReceipts.set(choiceOwner,choiceReceipt);
     let reactClearHandled = false;
     if (mokaClearTarget) {
       await sleep(80);
@@ -3431,7 +4100,7 @@
     return new Promise((r) => setTimeout(r, ms));
   }
 
-  async function setValueWithEvents(el, value) {
+  async function setValueWithEvents(el, value, keepFocus=false) {
     if (isEditableEl(el)) {
       // 富文本：先选中已有内容再插入，保证走编辑器的输入管线（React/Vue 才能感知）
       el.focus();
@@ -3455,7 +4124,6 @@
     }
     const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const previousValue = String(el.value || '');
-    const key = String(value).slice(-1) || 'Backspace';
     // 统一走原生 setter + React value tracker。execCommand 先触发浏览器输入管线，
     // 随后的 tracker 事件确保 Moka 的表单状态和校验器同步。
     if (typeof el.select === 'function') el.select();
@@ -3469,10 +4137,9 @@
     // 单一路径；再写一次 setter 会把 React 的 value tracker 拉回旧状态。
     if (inserted && String(el.value || '') === String(value)) {
       el.dispatchEvent(new Event('change', { bubbles:true }));
-      el.blur();
+      if(!keepFocus) el.blur();
       return;
     }
-    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles:true, key }));
     el.dispatchEvent(new InputEvent('beforeinput', { bubbles:true, cancelable:true, inputType:'insertText', data:String(value) }));
     const setter = Object.getOwnPropertyDescriptor(proto, "value");
     if (setter && setter.set) {
@@ -3487,9 +4154,10 @@
     }
     el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType:'insertText', data:String(value) }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
-    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles:true, key }));
-    el.blur();
-    el.dispatchEvent(new FocusEvent('focusout', { bubbles:true, relatedTarget:null }));
+    if(!keepFocus) {
+      el.blur();
+      el.dispatchEvent(new FocusEvent('focusout', { bubbles:true, relatedTarget:null }));
+    }
   }
 
   async function setFeishuYearValue(el, value) {
@@ -3568,6 +4236,11 @@
     const el = elementRegistry[parseInt(index, 10) - 1];
     if (!el) return { ok: false, reason: `元素 ${index} 不在注册表` };
     if (el.disabled) return { ok: false, reason: "元素已禁用" };
+    if(elementMetaRegistry[parseInt(index,10)-1]?.kind==='combobox') {
+      if(transactionTrigger!==(comboboxHost(el) || el)) captureTransactionSurface();
+      transactionTrigger=comboboxHost(el) || el;
+      comboboxOptionReceipts.delete(transactionTrigger);
+    }
     safeScrollIntoView(el);
     if (typeof el.focus === "function") el.focus();
     if (!document.hasFocus()) {
@@ -3579,32 +4252,35 @@
     if (norm.error) return { ok: false, dataGap: true, reason: norm.error };
     const target = norm.value;
     const isFeishuYear = deriveKind(el, deriveRole(el)) === 'feishu-year';
+    const keepFocus=elementMetaRegistry[parseInt(index,10)-1]?.kind==='combobox' ||
+      !!(transactionTrigger && genericPopup?.contains(el));
     const settleMs = isFeishuYear ? 350 : 50;
-    const write = () => isFeishuYear ? setFeishuYearValue(el, target) : setValueWithEvents(el, target);
+    const write = (text=target) => isFeishuYear ? setFeishuYearValue(el, text) : setValueWithEvents(el, text,keepFocus);
 
     // 第一次尝试
     await write();
     await sleep(settleMs);
     const actual1 = getCurrentValue(el);
     if (actual1 === target) {
-      el.blur?.();
-      el.dispatchEvent(new FocusEvent('focusout', { bubbles:true }));
+      if(!keepFocus) {el.blur?.();el.dispatchEvent(new FocusEvent('focusout', { bubbles:true }));}
       return { ok: true, action: "type_text", index, value: target, verified: true, note: norm.note };
     }
 
-    // 第一次失败，重试：清空 + 补键盘事件再设值
+    // 重试同一输入管线，并回读网站最终接受的值。
     console.warn(`${TAG} type_text 回读不一致，重试 (期望=${target}, 实际=${actual1})`);
     try {
       if (typeof el.select === "function") el.select();
-      el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "a", ctrlKey: true }));
-      el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "a", ctrlKey: true }));
-      await write();
+      const punctuation=/[!-/:-@\[-`{-~]/g;
+      const textInput=el.tagName==='TEXTAREA' || el.tagName==='INPUT' && /^(?:text|search|)$/.test(el.type);
+      const widthVariant=textInput && target.replace(punctuation,'')===String(actual1).replace(punctuation,'') &&
+        target!==actual1 ? target.replace(punctuation,char=>String.fromCharCode(char.charCodeAt(0)+0xfee0)) : null;
+      await write(widthVariant || target);
       await sleep(settleMs);
       const actual2 = getCurrentValue(el);
-      if (actual2 === target) {
-        el.blur?.();
-        el.dispatchEvent(new FocusEvent('focusout', { bubbles:true }));
-        return { ok: true, action: "type_text", index, value: target, verified: true, retried: true, note: norm.note };
+      if (actual2 === target || widthVariant && String(actual2).normalize('NFKC')===String(target).normalize('NFKC')) {
+        if(!keepFocus) {el.blur?.();el.dispatchEvent(new FocusEvent('focusout', { bubbles:true }));}
+        return { ok: true, action: "type_text", index, value: actual2, verified: true, retried: true,
+          note:widthVariant ? '使用全角等价符号并按规范化原文回读' : norm.note };
       }
       return { ok: false, reason: `回读验证失败（期望 ${target}，实际 ${actual2 || '空白'}）`, expected: target, actual: actual2, note: norm.note };
     } catch (err) {
@@ -3617,6 +4293,7 @@
     if (!el || !el.matches?.('input[type="file"]')) return { ok:false, reason:`元素 ${index} 不是文件输入框` };
     if (!fileData?.dataUrl || !fileData?.name) return { ok:false, dataGap:true, reason:'插件中尚未选择文件' };
     const fileLabel = fileFieldLabel(el);
+    const originalArea=fileUploadArea(el);
     const previousImages = new Set(Array.from(fileUploadArea(el)?.querySelectorAll('img[src]') || [], image => image.src));
     const response = await fetch(fileData.dataUrl);
     const blob = await response.blob();
@@ -3631,7 +4308,12 @@
       await sleep(500);
       const input = el.isConnected ? el : Array.from(document.querySelectorAll('input[type="file"]'))
         .find(node => fileFieldLabel(node) === fileLabel);
-      if (!input) continue;
+      if (!input) {
+        if(originalArea?.isConnected && visibleText(originalArea).includes(fileData.name) &&
+          !/上传中|uploading/i.test(visibleText(originalArea))) return {ok:true,action:'upload_file',index,
+            value:fileData.name,verified:true,receipt:'website-filename'};
+        continue;
+      }
       if (fileUploadPending(input)) continue;
       const area = fileUploadArea(input);
       const status = String(area?.textContent || '');
@@ -3639,17 +4321,22 @@
         return {ok:false,reason:'网站报告附件上传失败，请核对文件限制或网站服务状态'};
       }
       const receipt = fileFieldValue(input);
-      if (receipt === fileData.name) return {ok:true,action:'upload_file',index,value:fileData.name,
+      if (receipt === fileData.name || status.includes(fileData.name)) return {ok:true,action:'upload_file',index,value:fileData.name,
         verified:true,receipt:status.includes(fileData.name) ? 'website-filename' : 'native-file'};
       const photo = /\.(?:jpe?g|png|gif|webp)$/i.test(fileData.name) &&
         Array.from(area?.querySelectorAll('img[src]') || []).some(image => !previousImages.has(image.src));
       if (photo) return {ok:true,action:'upload_file',index,value:fileData.name,verified:true,receipt:'photo-preview'};
     }
-    return {ok:false,reason:'上传事务超时：网站尚未显示附件文件名或照片回执'};
+    return {ok:false,pending:true,reason:'附件已交给网站，上传回执待确认'};
   }
 
   async function closeResumeTransactions() {
     visibilityCache = new Map();
+    genericPopup=null;
+    const generic=discoverGenericPopup();
+    const genericClose=generic && Array.from(generic.querySelectorAll('button,a,[role="button"],span')).find(el=>
+      isVisible(el) && /^(?:取消|关闭|close|cancel)$/i.test(ownVisibleText(el)));
+    if(genericClose) genericClose.click();
     const layer = focusedEditorLayer();
     if (layer && transactionTrigger?.isConnected) {
       const arrow=Array.from(transactionTrigger.closest('.phoenix-select')?.querySelectorAll('.phoenix-select__switchArrow') || [])
@@ -3675,7 +4362,7 @@
     }
     await sleep(80);
     visibilityCache = new Map();
-    const remaining=focusedEditorLayer();
+    const remaining=focusedEditorLayer() || discoverGenericPopup();
     const retryTarget=close || transactionTrigger?.closest?.('.form-item')?.querySelector('.form-item__label') ||
       transactionTrigger?.closest?.('.phoenix-select')?.querySelector('.phoenix-select__switchArrow');
     const box=remaining && retryTarget?.getBoundingClientRect();
@@ -3748,10 +4435,18 @@
       }
     }
 
-    const snapshotEntries = buildElementTable().filter(entry => entry.context !== 'popup').map(entry => ({
-          index:entry.index, section:entry.section, recordIndex:entry.recordIndex,
-          dateSlot:entry.dateSlot, datePart:entry.datePart, label:entry.label, placeholder:entry.placeholder,
+    const snapshotEntries = buildElementTable().map(entry => ({
+          index:entry.index, section:entry.section, regionId:entry.regionId,parentNodeId:entry.parentNodeId,recordIndex:entry.recordIndex,
+          observedValue:entry.value,
+          observedState:{tag:entry.observed?.tag,rawValue:entry.observed?.rawValue,
+            displayText:entry.observed?.displayText,placeholder:entry.observed?.placeholder,
+            field:entry.observed?.field,readonly:entry.observed?.readonly,title:entry.observed?.title,
+            composite:entry.observed?.composite},
+          stableKey:entry.stableKey,context:entry.context,popupOwnerKey:entry.popupOwnerKey,
+          dateSlot:entry.dateSlot, datePart:entry.datePart,calendarDate:entry.calendarDate, label:entry.label, placeholder:entry.placeholder,
           recordStableKey:entry.recordStableKey, validationError:entry.validationError,
+          summaryText:entry.summaryText,regionGate:entry.regionGate,localView:entry.localView,
+          viewSelected:entry.viewSelected,optionLabel:entry.optionLabel,clickMode:entry.clickMode,
           // 日期单元诊断仅供本地导出，帮助区分可见选中值与输入搜索状态。
           ...(entry.datePart ? {dateObservedValue:entry.value, dateDom:
             [elementRegistry[Number(entry.index)-1],elementRegistry[Number(entry.index)-1]?.parentElement,
@@ -3760,6 +4455,17 @@
                 text:tidyLabel(node.textContent || '').slice(0,80),placeholder:node.getAttribute('placeholder')
               }))} : {}),
           kind:entry.kind, checked:entry.checked, domOrder:entry.domOrder, required:!!entry.required,
+          ...(['observed-field','combobox'].includes(entry.kind) ? {observedDom:
+            [elementRegistry[Number(entry.index)-1],elementStateRegistry[Number(entry.index)-1],
+              elementStateRegistry[Number(entry.index)-1]?.parentElement,
+              elementStateRegistry[Number(entry.index)-1]?.parentElement?.parentElement].filter(Boolean).map(node=>({
+                tag:node.tagName,cls:String(node.className || ''),role:node.getAttribute('role'),
+                autocomplete:node.getAttribute('aria-autocomplete'),expanded:node.getAttribute('aria-expanded'),
+                editable:node.getAttribute('contenteditable'),
+                cursor:window.getComputedStyle(node).cursor,onclick:node.hasAttribute('onclick'),
+                children:Array.from(node.children).map(child=>({tag:child.tagName,cls:String(child.className || ''),
+                  visible:isVisible(child),text:child.matches('input,textarea')?'':ownVisibleText(child).slice(0,120)}))
+              }))} : {}),
           ...(entry.viaProxy && /checkbox|radio/.test(entry.kind) ? {proxyDom:
             [elementRegistry[Number(entry.index)-1],elementStateRegistry[Number(entry.index)-1],
               elementStateRegistry[Number(entry.index)-1]?.parentElement,
@@ -3774,6 +4480,12 @@
       url: location.href,
       title: document.title,
       tagCount,
+      observedPopup:genericPopup ? {tag:genericPopup.tagName,cls:String(genericPopup.className || ''),
+        fresh:!transactionVisibleNodes.has(genericPopup),ownerKey:nodeId(transactionTrigger),
+        selection:popupSelectionText(genericPopup),
+        selectionCandidates:Array.from(genericPopup.querySelectorAll('*')).filter(isVisible)
+          .map(node=>({tag:node.tagName,cls:String(node.className || ''),text:visibleText(node)}))
+          .filter(item=>/^(?:已选择|已选|selected)\s*[:：]/i.test(item.text) && item.text.length<200)} : null,
       pointerLike,
       entryLike,
       rowLike,
@@ -3787,7 +4499,7 @@
           width:Math.round(el.getBoundingClientRect().width),height:Math.round(el.getBoundingClientRect().height),
           cursor:window.getComputedStyle(el).cursor})),
       fieldAncestors: Array.from(document.querySelectorAll('input:not([type="hidden"]),textarea,[role="combobox"]'))
-        .filter(isVisible).slice(0,120).map(el => ({
+        .filter(el=>isVisible(el) || el.matches('input[type="file"]') && isVisible(fileUploadArea(el))).slice(0,120).map(el => ({
           tag:el.tagName, type:el.getAttribute('type'), placeholder:el.getAttribute('placeholder'),
           derivedLabel:deriveLabel(el),
           ancestors:Array.from((function* () { for (let node=el.parentElement,i=0; node && node!==document.body && i<10; node=node.parentElement,i++) yield node; })())
@@ -3797,7 +4509,7 @@
                 !child.querySelector('input,textarea,select')).map(child => tidyLabel(child.textContent || ''))
                 .filter(value => value.length > 0 && value.length < 36).slice(0,4)}))
         })),
-      controlStructure: Array.from(document.querySelectorAll('.ud__select,.ud__picker,.phoenix-radio,.phoenix-select'))
+      controlStructure: Array.from(document.querySelectorAll('[role="combobox"],.ud__select,.ud__picker,.phoenix-radio,.phoenix-select'))
         .filter(isVisible).slice(0,80).map(el=>({
           label:deriveLabel(el.querySelector('input') || el),
           children:[el,...el.querySelectorAll('*')].slice(0,45).map(node=>({
@@ -3845,6 +4557,7 @@
         parentClass:String(el.parentElement?.className || ''),outer:el.outerHTML.replace(/value="[^"]*"/g,'value="[redacted]"').slice(0,500)
       })),
       snapshotEntries,
+      lastPopupDiagnostics:Array.from(globalThis.__jevPopupDiagnostics?.values() || []),
       mokaFormControls: isMokaFormPage() ?
         Array.from(document.querySelectorAll('input,textarea,button,[role="combobox"]')).filter(isVisible).map(el => ({
           tag:el.tagName, cls:String(el.className || '').slice(0,120), type:el.getAttribute('type'),
@@ -3951,6 +4664,7 @@
               url: location.href,
               documentId,
               title: document.title,
+              observation:pageObservation,
               activeSection: activeSectionTitle(),
               editorSurface: hasEditorSurface(),
               editorSurfaceId: recordEditorSurface() ? nodeId(recordEditorSurface()) : '',
@@ -3971,9 +4685,19 @@
           closeResumeTransactions().then(sendResponse);
           return true;
         }
+        case "BEGIN_FIELD_TRANSACTION": {
+          const el=elementStateRegistry[parseInt(msg.index,10)-1];
+          if(!el) {sendResponse({ok:false,reason:'字段已离开当前观察'});return true;}
+          const host=comboboxHost(el) || el;
+          if(transactionTrigger!==host) captureTransactionSurface();
+          transactionTrigger=host;
+          comboboxOptionReceipts.delete(host);
+          sendResponse({ok:true});
+          return true;
+        }
         case "TRANSACTION_STATE": {
           visibilityCache = new Map();
-          sendResponse({ok:true,open:!!focusedEditorLayer()});
+          sendResponse({ok:true,open:!!(focusedEditorLayer() || discoverGenericPopup())});
           return true;
         }
         case "TRANSACTION_OUTSIDE_POINT": {
@@ -4014,7 +4738,7 @@
         }
 
         case "TRUSTED_CLICK_POINT": {
-          sendResponse(trustedClickPoint(msg.index));
+          sendResponse(trustedClickPoint(msg.index,msg.optionIntent));
           return true;
         }
 
@@ -4053,9 +4777,31 @@
           (async () => {
             try {
               let res;
-              if (action === "click") res = await executeClick(index);
+              if (action === "click") res = await executeClick(index,msg.optionIntent);
               else if (action === "pick_date") res = await executeDatePicker(index, msg.value);
               else if (action === "type_text") res = await executeTypeText(index, value);
+              else if (action === 'submit_search') {
+                const el=elementRegistry[parseInt(index,10)-1];
+                const meta=elementMetaRegistry[parseInt(index,10)-1];
+                if(!el?.matches('input:not([readonly])') || !el.value || meta?.context!=='popup' ||
+                  !transactionTrigger || !genericPopup?.contains(el) || genericPopup===document.body) {
+                  res={ok:false,reason:'搜索确认仅作用于当前字段查找弹层的非空输入框'};
+                } else {
+                  // Enter 在当前查找层内通知搜索处理器；层外表单保持原状。
+                  const layer=genericPopup,contain=event=>event.stopPropagation();
+                  layer.addEventListener('keydown',contain);
+                  layer.addEventListener('keyup',contain);
+                  try {
+                    el.focus();
+                    for(const type of ['keydown','keyup']) el.dispatchEvent(new KeyboardEvent(type,
+                      {bubbles:true,cancelable:true,key:'Enter',code:'Enter',keyCode:13,which:13}));
+                    res={ok:true,action:'submit_search'};
+                  } finally {
+                    layer.removeEventListener('keydown',contain);
+                    layer.removeEventListener('keyup',contain);
+                  }
+                }
+              }
               else if (action === "upload_file") res = await executeUploadFile(index, msg.file);
               else if (action === "select") res = await executeSelect(target);
               else if (action === 'scroll') {

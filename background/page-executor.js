@@ -23,9 +23,9 @@ async function dispatchTrustedPointer(debuggee, point) {
   return {ok:true};
 }
 
-async function clickWithTrustedPointer(tabId, frameId, index) {
+async function clickWithTrustedPointer(tabId, frameId, index, optionIntent) {
   if (frameId !== 0) return {ok:false,reason:'真实指针点击目前仅支持顶层表单'};
-  const target = await sendToFrame(tabId, frameId, {type:'TRUSTED_CLICK_POINT',index});
+  const target = await sendToFrame(tabId, frameId, {type:'TRUSTED_CLICK_POINT',index,optionIntent});
   if (!target?.ok || target.clickMode !== 'trusted-pointer') {
     return target?.ok ? {ok:false,reason:'目标未声明真实指针点击策略'} : target;
   }
@@ -37,7 +37,7 @@ async function clickWithTrustedPointer(tabId, frameId, index) {
   try {
     await chrome.debugger.attach(debuggee, '1.3');
     attached = true;
-    const currentTarget=await sendToFrame(tabId,frameId,{type:'TRUSTED_CLICK_POINT',index});
+    const currentTarget=await sendToFrame(tabId,frameId,{type:'TRUSTED_CLICK_POINT',index,optionIntent});
     if (!currentTarget?.ok) return currentTarget;
     const clicked = await dispatchTrustedPointer(debuggee, currentTarget.point);
     return clicked.ok ? {ok:true,action:'click',bridge:'trusted-pointer',label:target.label} : clicked;
@@ -48,9 +48,9 @@ async function clickWithTrustedPointer(tabId, frameId, index) {
   }
 }
 
-async function executePageClick(tabId, frameId, index, trustedPointer = false) {
-  if (trustedPointer) return clickWithTrustedPointer(tabId, frameId, index);
-  return sendToFrame(tabId, frameId, {type:'EXECUTE',action:'click',index});
+async function executePageClick(tabId, frameId, index, trustedPointer = false, optionIntent) {
+  if (trustedPointer) return clickWithTrustedPointer(tabId, frameId, index, optionIntent);
+  return sendToFrame(tabId, frameId, {type:'EXECUTE',action:'click',index,optionIntent});
 }
 
 async function closePageTransactions(tabId,frameId) {
@@ -193,6 +193,9 @@ async function selectFeishuRangeFromPicker(tabId, frameId, index, value) {
   const read = () => sendToFrame(tabId, frameId, {type:'FEISHU_RANGE_STATE',index});
   const initial = await read();
   if (!initial?.ok) return initial;
+  if(initial.values?.some((part,slot)=>/^(?:\d{4}-\d{2}|至今)$/.test(part) && part!==wanted[slot])) {
+    return {ok:false,reason:'已有日期端点与来源冲突，保留原值并待核对'};
+  }
   const debuggee = {tabId};
   let attached = false;
   try {
@@ -488,21 +491,21 @@ async function commitControlledText(tabId, frameId, index, value, keepFocus = fa
     const platform = page?.platform;
     const moka = platform === 'moka-form';
     const feishu = platform === 'feishu-jobs';
-    const keepSearchOpen = feishu && operation === 'TYPE_TEXT' &&
-      /^education\[\d+\]\.(institution|area)$/.test(resumeField || '') &&
-      /学校|专业|请输入/.test(`${decision.label || ''} ${targetEntry?.label || ''}`);
+    const keepSearchOpen = operation === 'TYPE_TEXT' && targetEntry?.kind==='combobox';
     const beisenChoice = operation === 'CLICK' && decision.context === 'popup' &&
       targetEntry?.clickMode !== 'trusted-pointer' && platform === 'beisen' &&
       !/^(取消|清空已选)$/.test(decision.label || '');
     let result;
+    const optionIntent=decision.optionIntent || (decision.pickerBranch ? 'expand' : 'select');
+    if(keepSearchOpen) await sendToFrame(tabId,frameId,{type:'BEGIN_FIELD_TRANSACTION',index:local});
     if (beisenChoice) result = await clickBeisenPickerInPage(tabId,frameId,local,decision.label,decision.pickerLeaf);
-    else if (operation === 'CLICK' && decision.context === 'popup' && moka) result = await clickWithTrustedPointer(tabId,frameId,local);
+    else if (operation === 'CLICK' && decision.context === 'popup' && moka) result = await clickWithTrustedPointer(tabId,frameId,local,optionIntent);
     else if (operation === 'TYPE_TEXT' && targetEntry?.kind === 'feishu-year') result = await selectFeishuYearFromPicker(tabId,frameId,local,execMsg.value);
     else if (operation === 'TYPE_TEXT' && targetEntry?.kind === 'feishu-date-range') result = await selectFeishuRangeFromPicker(tabId,frameId,local,execMsg.value);
     else if (operation === 'PICK_DATE' && targetEntry?.clickMode === 'trusted-pointer') result = await pickDateWithTrustedPointer(tabId,frameId,local,execMsg.value);
-    else if (operation === 'TYPE_TEXT' && (targetEntry?.textCommitMode === 'page-world' || moka || keepSearchOpen)) result = await commitControlledText(tabId,frameId,local,execMsg.value,
+    else if (operation === 'TYPE_TEXT' && (targetEntry?.textCommitMode === 'page-world' || moka || feishu && keepSearchOpen)) result = await commitControlledText(tabId,frameId,local,execMsg.value,
       (moka && targetEntry?.kind === 'combobox') || keepSearchOpen,targetEntry?.textCommitMode === 'page-world' ? 'direct' : true);
-    else if (operation === 'CLICK') result = await executePageClick(tabId,frameId,local,targetEntry?.clickMode === 'trusted-pointer');
+    else if (operation === 'CLICK') result = await executePageClick(tabId,frameId,local,targetEntry?.clickMode === 'trusted-pointer',optionIntent);
     else result = await sendToFrame(tabId,frameId,execMsg);
     if (beisenChoice && !result?.ok && /找不到北森单选图标|目标不属于北森常量选择器/.test(result?.reason || '')) result = await sendToFrame(tabId,frameId,execMsg);
     return result;

@@ -52,5 +52,16 @@ for (const [type,inputMode,source,actual,expected] of [
   assert.equal(callbacks,1,'原生事件已提交的相同值保持单次提交');
   w.close();
 }
+for(const trusted of [false,true]) for(const optionIntent of ['expand','select']) {
+  const sent=[];
+  globalThis.chrome={debugger:{attach:async()=>{},detach:async()=>{},sendCommand:async()=>{}}};
+  const executor=createPageExecutor({sleep:async()=>{},sendToFrame:async(_tab,_frame,msg)=>{
+    sent.push(msg);return {ok:true,clickMode:'trusted-pointer',point:{x:10,y:20}};
+  }});
+  await executor.executeField({tabId:1,frameId:0,local:'1',decision:{operation:'CLICK',context:'popup',optionIntent},
+    targetEntry:{kind:'option-item',clickMode:trusted?'trusted-pointer':undefined},page:{},execMsg:{type:'EXECUTE',action:'click',index:'1'}});
+  assert.ok(sent.length>0);
+  assert.ok(sent.every(msg=>msg.optionIntent===optionIntent),'普通点击和真实点击传递明确意图');
+}
 delete globalThis.chrome;
 console.log('✓ 受控数字、文本标识精确匹配及多行文本组件提交通过');

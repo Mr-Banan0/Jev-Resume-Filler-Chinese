@@ -268,10 +268,22 @@
     <!-- 设置 pane -->
     <section class="pane" data-pane="settings">
       <label class="field">
-        <span class="field-label">TypeSafe Jev API Key</span>
-        <input type="password" id="jev-api-key" placeholder="apikey_xxx" />
+        <span class="field-label">Jev API 服务</span>
+        <select id="jev-provider">
+          <option value="typesafe">TypeSafe 官方</option>
+          <option value="quickrouter">QuickRouter · jev-1.13.0</option>
+        </select>
       </label>
-      <button class="btn" id="btn-save-key">保存 Key</button>
+      <p class="hint" id="jev-endpoint"></p>
+      <label class="field">
+        <span class="field-label">当前服务的 API Key</span>
+        <input type="password" id="jev-api-key" autocomplete="off" placeholder="API Key" />
+      </label>
+      <div class="form-row">
+        <button class="btn" id="btn-save-key">保存 API 配置</button>
+        <button class="btn ghost" id="btn-test-key">测试连接</button>
+      </div>
+      <p class="hint">测试连接仅发送合成样例。开始填写后，当前分区的相关简历资料会发送给所选 API 服务；Key 仅保存到本机。</p>
 
       <label class="field">
         <span class="field-label">字段填写策略</span>
@@ -280,7 +292,7 @@
           <option value="adapted">原适配策略（对照）</option>
         </select>
       </label>
-      <p class="hint">默认由 Jev 选择当前记录的空字段与 JSON 来源，再逐步操作下拉和日期。平台驱动继续保留；两种策略共享分区与记录调度。</p>
+      <p class="hint">默认按区域任务逐层观察、选择资料并填写字段。原适配策略保留用于对照，两种策略共享页面执行工具。</p>
 
       <hr class="divider" />
 

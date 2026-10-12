@@ -24,6 +24,7 @@ window.chrome={runtime:{onMessage:{addListener:fn=>listeners.push(fn)},sendMessa
 for(const file of ['widget-drivers','platform-drivers','content']) window.eval(readFileSync(new URL(`../content/${file}.js`,import.meta.url),'utf8'));
 const snapshot=()=>new Promise(resolve=>listeners[0]({type:'SNAPSHOT_REQUEST'},{},resolve));
 const before=await snapshot();
+assert.equal(before.ok,true,before.reason);
 const fields=before.elements.filter(el=>el.context!=='popup' && !['card','action'].includes(el.kind));
 assert.deepEqual(Array.from(fields.filter(el=>el.label==='学历'),el=>el.recordIndex),[0,1]);
 for(const [label,section] of [['名称','论文/专著'],['项目名称','课题项目经验'],['实践名称','在校实践'],['技能名称','技能'],['个人照片','个人信息']]) {

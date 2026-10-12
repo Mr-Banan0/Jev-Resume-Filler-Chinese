@@ -10,7 +10,7 @@ globalThis.chrome={
   runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},
     sendMessage:m=>{if(m.type==='FILL_DONE') complete(m);},lastError:null},
   tabs:{query:async()=>[{id:1,title:'个人信息',url:'https://example.test/form'}],sendMessage(_id,m,_opts,reply){
-    if(m.type==='PING'||m.type==='CLOSE_TRANSACTIONS') return reply({ok:true,version:'2026-10-08.59'});
+    if(m.type==='PING'||m.type==='CLOSE_TRANSACTIONS') return reply({ok:true,version:'2026-10-11.4'});
     if(m.type==='FINGERPRINT') return reply({ok:true,fingerprint:String(revision)});
     if(m.type==='SNAPSHOT_FULL') return reply({ok:true,fingerprint:String(revision),page:{title:'个人信息',url:'https://example.test/form',text:'个人信息'},elements:[
       {index:'1',kind:deterministicDate ? 'beisen-date' : 'date',label:'出生日期',value:'',
@@ -27,7 +27,7 @@ globalThis.chrome={
 };
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',runtimeVersion:'2026-10-08.59',interactionPolicy:'adapted',apiKey:'synthetic-key',resume:{basics:{birthDate:'2001-02-10',email:'test@example.com'}}},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-11.4',interactionPolicy:'adapted',apiKey:'synthetic-key',resume:{basics:{birthDate:'2001-02-10',email:'test@example.com'}}},{},()=>{});
   const result=await completion;
   assert.equal(email,'test@example.com',JSON.stringify(result));
   assert.ok(clicks<=4,'字段重试有界');

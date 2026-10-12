@@ -107,13 +107,13 @@ const classlessSelectRes = await new Promise((resolve) => handler({ type: 'SNAPS
 
 console.log('识别到控件数:', res.count);
 for (const el of res.elements) {
-  const bits = [el.kind, el.context ? `ctx=${el.context}` : '', el.disabled ? 'disabled' : '', el.operations.join('/')].filter(Boolean);
+  const bits = [el.kind, `section=${el.section}`, el.context ? `ctx=${el.context}` : '', el.disabled ? 'disabled' : '', el.operations.join('/')].filter(Boolean);
   console.log(`  ${el.index} [${el.role}] ${el.label}  <${bits.join(' ')}>`);
 }
 
 const byLabel = (t) => res.elements.find((e) => e.label.includes(t));
 const checks = [
-  ['姓名 是普通 input', byLabel('请输入姓名')?.kind === 'input'],
+  ['姓名使用关联 label 并保持普通 input', byLabel('姓名')?.kind === 'input'],
   ['Moka 出生日期判定为确定性日期选择器', byLabel('出生日期')?.kind === 'moka-date'],
   ['Moka 出生日期只走 PICK_DATE 事务', JSON.stringify(byLabel('出生日期')?.operations) === '["PICK_DATE"]'],
   ['Moka 完整日期使用确定性日期执行器', res.elements.some((e) => e.label === '毕业时间' && e.kind === 'moka-date' && JSON.stringify(e.operations) === '["PICK_DATE"]')],
@@ -173,7 +173,9 @@ const checks = [
   ,['亲属“否”单选项带原始取值', res.elements.some((e) => e.role === 'radio' && e.optionValue === '否')]
 ];
 
-const mokaDegree = res.elements.find((e) => e.label === '学历' && e.kind === 'custom-select');
+const mokaDegree = classlessSelectRes.elements.find((e) => e.label === '学历' && e.kind === 'custom-select');
+// 命中测试从学校清除器切换到当前学历字段；真实执行器会检查当前目标是否被遮挡。
+window.document.elementFromPoint=()=>window.document.querySelector('#moka-select');
 const mokaTrustedPoint = await new Promise((resolve) => handler({
   type:'TRUSTED_CLICK_POINT', index:mokaDegree?.index
 }, {}, resolve));

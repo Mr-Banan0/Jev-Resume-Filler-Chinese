@@ -3,6 +3,10 @@ import {buildActionPlan,buildDataBlockPlan,buildSectionPlan,buildSectionJevState
 import {recordLedgerKey} from '../lib/traversal-state.js';
 assert.deepEqual(prepareResume({basics:{highestDegree:'硕士'},education:[{studyType:'硕士'},{studyType:'本科'},{}]})
   .education.map(edu=>edu.isHighestEducation),['是','否',''],'最高学历判断来自已提供的学历；缺少学历保持待补');
+assert.deepEqual(prepareResume({basics:{highestDegree:'硕士'},education:[
+  {studyType:'硕士',studyMode:'全日制'},{studyType:'本科',studyMode:'全日制'},{studyType:'硕士'}]})
+  .education.map(edu=>edu.isFullTimeHighestEducation),['是','否',''],
+  '组合问答由明确的学历及学习方式共同计算，缺项保留待补');
 
 const mixedControls=[
   {index:'name',stableKey:'name',section:'个人信息',kind:'input',label:'姓名',value:'示例姓名',operations:['TYPE_TEXT']},
@@ -205,7 +209,7 @@ assert.equal(buildActionPlan([{...custom,value:'空间分析'}],resume,[rawBindi
 
 const state=buildSectionJevState({page,elements:[control,{...control,index:'foreign',section:'项目经历',value:'外部分区内容'}],resume,actionPlan:plan});
 assert.equal(state.record_index,1);
-assert.deepEqual(state.json_fields,resume.education,'当前资料块的完整字段与所有记录进入局部状态');
+assert.deepEqual(state.json_fields,resume.education[1],'字段操作接收当前源记录的完整字段');
 assert.equal(state.controls.length,1);
 assert.ok(!JSON.stringify(state).includes('其他分区私有项目'));
 const attachmentState=buildSectionJevState({page:{...page,dataBlock:'basics'},elements:[control],resume});
@@ -276,7 +280,7 @@ const attachmentChoice=buildActionPlan([{index:'photo',label:'证件照',section
   stableKey:'photo',kind:'file',value:'',operations:['UPLOAD_FILE']}],
   {basics:{photo:{name:'portrait.png',type:'image/png',dataUrl:'data:image/png;base64,LOCAL'}}},[],
   {title:'附件',dataBlock:'basics',scopedSection:true,ignoreUnmapped:true});
-assert.equal(attachmentChoice.actions.find(a=>a.operation==='BIND_FIELD')?.fieldLabel,'简历照片',
+assert.equal(attachmentChoice.actions.find(a=>a.operation==='BIND_FIELD')?.fieldLabel,'简历照片（头像／个人照片）',
   '附件候选保留用途语义，照片与简历文件可区分');
 
 const presentControl={index:'present',stableKey:'present',section:'实习经历',label:'至今',

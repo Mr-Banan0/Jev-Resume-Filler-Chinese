@@ -7,13 +7,15 @@ import {JSDOM} from 'jsdom';
 import {CONTENT_SCRIPT_VERSION} from '../lib/content-version.js';
 
 const live=process.argv.includes('--live');
+const apiProvider=process.argv.includes('--quickrouter') ? 'quickrouter' : 'typesafe';
 const adapted=process.argv.includes('--adapted');
-const fail=process.argv.includes('--failure');
+const closeFailure=process.argv.includes('--close-failure');
+const fail=process.argv.includes('--failure') || closeFailure;
 let apiKey='synthetic';
 if(live) {
-  apiKey=process.env.TYPESAFE_API_KEY;
-  if(!apiKey) try {apiKey=readFileSync(join(homedir(),'.config/typesafe/api_key'),'utf8').trim();} catch {}
-  assert.ok(apiKey,'设置 TYPESAFE_API_KEY 后运行真实判断评测');
+  apiKey=process.env[apiProvider==='quickrouter'?'QUICKROUTER_API_KEY':'TYPESAFE_API_KEY'];
+  if(!apiKey && apiProvider==='typesafe') try {apiKey=readFileSync(join(homedir(),'.config/typesafe/api_key'),'utf8').trim();} catch {}
+  assert.ok(apiKey,'配置所选 API 服务的环境变量 Key 后运行真实判断评测');
 }
 const resume={basics:{name:'已有测试姓名'},education:[
   {institution:'合成大学甲',studyMode:'全日制',endDate:'2026-11-30',researchFocus:'城市计算'},
@@ -43,7 +45,8 @@ function syntheticChoice(body) {
       return entries.find(([,a])=>a.operation==='BIND_FIELD' && a.source_field?.endsWith(`.${field}`));
     }
     const desired=String(interaction.desired_value);
-    const options=entries.filter(([,a])=>a.option_label);
+    const options=entries.filter(([,a])=>['CLICK','SELECT'].includes(a.operation) &&
+      body.state.section_context.controls.some(control=>control.target===a.target && control.context==='popup'));
     if(options.length) {
       const labels=options.map(([,a])=>a.label);
       const wanted=labels.some(label=>/年$/.test(label)) ? `${Number(desired.slice(0,4))}年` :
@@ -68,6 +71,8 @@ function syntheticChoice(body) {
 }
 globalThis.fetch=async(url,args)=>{
   const body=JSON.parse(args.body);requests.push(body);
+  assert.equal(url,apiProvider==='quickrouter'?'https://api.quickrouter.ai/v1/systemone':'https://api.typesafe.ai/v1/systemone');
+  assert.equal(body.model,apiProvider==='quickrouter'?'jev-1.13.0':'jev-latest','每层决策保持同一服务配置');
   assert.ok(requests.length<=120,'决策次数有界');
   if(body.state.interaction) {
     assert.ok(!JSON.stringify(body).includes('PRIVATE_BYTES'));
@@ -87,6 +92,8 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
   sendMessage:msg=>{progress.push(msg);if(msg.type==='FILL_DONE')resolveDone(msg);},lastError:null},
   tabs:{query:async()=>[{id:1,title:'合成简历表单',url:'https://unseen.example.test/resume'}],
     sendMessage(_tab,msg,_opts,reply){
+      if(closeFailure && msg.type==='CLOSE_TRANSACTIONS') return reply({ok:false,reason:'合成关闭失败'});
+      if(closeFailure && msg.type==='TRANSACTION_STATE') return reply({ok:true,open:true});
       if(msg.type==='EXECUTE') {
         executions.push(msg);
         if(fail && msg.action==='click' && window.document.querySelector('[role=listbox]')) return reply({ok:false,reason:'合成选项执行失败'});
@@ -95,12 +102,13 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
     }},scripting:{executeScript:async()=>[{frameId:0}]},storage:{session:{get:async()=>({}),set:async()=>{}}}};
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',runtimeVersion:CONTENT_SCRIPT_VERSION,apiKey,resume,
+  listener({type:'START_FILL',runtimeVersion:CONTENT_SCRIPT_VERSION,apiKey,apiProvider,resume,
     ...(adapted ? {interactionPolicy:'adapted'} : {})},{},()=>{});
   const timeout=original.setTimeout(()=>resolveDone({ok:false,reason:'测试达到 180 秒预算'}),180000);
   const result=await completion;original.clearTimeout(timeout);
   assert.equal(progress.find(item=>item.phase==='start')?.interactionPolicy,adapted ? 'adapted' : 'observed',
     '省略策略时使用通用观察；显式对照策略仍可选择');
+  assert.equal(progress.find(item=>item.phase==='start')?.apiProvider,apiProvider);
   const rows=[...window.document.querySelectorAll('#education .experience-item')];
   const actual=rows.map((_,i)=>({institution:window.document.getElementById(`school-${i}`).value,
     studyMode:window.document.getElementById(`mode-${i}`).textContent,
@@ -123,9 +131,12 @@ try {
   if(fail) {
     assert.equal(result.ok,false,'执行失败不能报告填写完成');
     assert.ok(requests.length<120,'失败字段退出后其他字段仍有机会执行');
-    assert.ok(window.document.getElementById('focus-0').value,'失败隔离后继续填写其他字段');
+    if(!closeFailure) assert.ok(window.document.getElementById('focus-0').value,JSON.stringify({message:'失败隔离后继续填写其他字段',result,
+      decisions:progress.filter(item=>['decided','failed','blocked','section'].includes(item.phase)).slice(-24)}));
+    if(closeFailure) assert.ok(progress.filter(item=>item.phase==='decided' && item.operation==='RETURN').length<8,
+      '关闭持续失败时记录待核对并有限退出');
   }
-  original.log(JSON.stringify({policy:adapted ? 'adapted' : 'observed',model:live ? 'real-jev' : 'synthetic',
+  original.log(JSON.stringify({policy:adapted ? 'adapted' : 'observed',apiProvider,model:live ? 'real-jev' : 'synthetic',
     failureCase:fail,correct,total:10,requests:requests.length,executions:executions.length,
     submitted:false,ok:result.ok,reason:result.reason || '',pending:result.pendingIssues?.length || 0}));
 } finally {

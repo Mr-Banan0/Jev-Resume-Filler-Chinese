@@ -3,11 +3,18 @@
 
 import { buildActionPlan, buildDataBlockPlan, buildRecordBindingPlan, buildSectionPlan, buildTodoList, choose, classifyRecordAddition, countRenderedRecords, fieldBindingThreshold, getResumeValue, hasSelectedRadioPeer, isProtectedControl, isRecordSaveControl, prepareResume, sectionCollection } from "../lib/jev-client.js";
 import { CONTENT_SCRIPT_VERSION, SNAPSHOT_PROTOCOL_VERSION } from "../lib/content-version.js";
-import { classifyPageState } from "../lib/page-state.js";
+import { classifyPageState,pageRouteKey,pageBoundaryReason } from "../lib/page-state.js";
 import { createPageExecutor } from './page-executor.js';
 import { addedRecordEvidence, createRunMemory, dateDependencyCandidates, observeDateDefaults, frameOf, recordLedgerKey, recordOutcome, savedRecordEvidence, scopeControls } from '../lib/traversal-state.js';
 import {buildObservedActionPlan,normalizeObservedControls} from '../lib/observed-interaction.js';
 import {DEFAULT_INTERACTION_POLICY,OBSERVED_POLICY,resolveInteractionPolicy} from '../lib/interaction-policy.js';
+import {runGoalScheduler} from './goal-runner.js';
+import {fieldAudit,createGoalLedger,regionPlan,recordSurfaces} from '../lib/goal-state.js';
+import {actionPermission,hasCommittedValue} from '../lib/action-policy.js';
+import {interactionAttemptKey} from '../lib/source-contracts.js';
+import {jevProvider,testJevConnection} from '../lib/jev-api.js';
+import {verifiedOption,verifiedSource} from '../lib/jev-verification.js';
+import {belongsToRegion,frameObservation} from '../lib/page-scope.js';
 
 console.log("[Jev Resume Filler] Service Worker 启动");
 
@@ -19,10 +26,9 @@ const MAX_STALE_RETRY = 3;
 const MAX_NO_CHANGE = 3;
 // 多步骤网申逐段填写，最终投递由用户操作。
 const DEFAULT_GOAL =
-  "Fill the current section of the job application resume form with the user's resume data. " +
-  "When the current section is filled, click the next-section button (下一步 / 保存并下一步 / 保存并继续 / 下一页 / Save and continue) to move on. " +
-  "The controller keeps final submission controls outside the available actions. " +
-  "Stop when the resume sections are filled or no further section can be reached.";
+  "Complete source-supported empty resume fields. Observe the current page, choose a useful local task, execute it and verify the result. " +
+  "Preserve existing values and referral codes. Save resume drafts when supported. " +
+  "Record missing facts and blocked interactions separately, continue independent tasks, and leave final application submission to the user.";
 const WAIT_MS_DEFAULT = 80;
 // 点击后需要等 UI 反应的场景
 const WAIT_MS_CLICK = 200;
@@ -36,6 +42,7 @@ const MAX_EMPTY_RETRY = 2;
 const SECTION_BUTTON_RE = /(下一步|上一步|保存|下一页|上一页|继续|next|continue|save)/i;
 let activeFillRunId = 0;
 let fillEvents = [];
+let decisionTraces=[];
 let eventPersistence = Promise.resolve().then(async () => {
   const saved=await chrome.storage?.session?.get?.(['fillEvents']);
   fillEvents=saved?.fillEvents || [];
@@ -52,10 +59,12 @@ async function getActiveTab() {
 
 function pushToPopup(message) {
   if (['FILL_PROGRESS','FILL_DONE'].includes(message.type)) {
-    const event={...message,at:Date.now()};
+    const {decisionTrace,...metadata}=message;
+    const event={...metadata,at:Date.now()};
     eventPersistence = eventPersistence.then(() => {
       fillEvents=[...fillEvents,event].slice(-1500);
-      return chrome.storage.session.set({fillEvents:fillEvents.slice()});
+      if(decisionTrace) decisionTraces=[...decisionTraces,{at:event.at,...decisionTrace}].slice(-128);
+      return chrome.storage.session.set({fillEvents:fillEvents.slice(),decisionTraces});
     }).catch(() => {});
   }
   try {
@@ -104,7 +113,7 @@ async function listFrameIds(tabId) {
 }
 
 // 汇总所有 frame 的可交互控件；元素索引加 frame 前缀，执行时按前缀路由回对应 frame
-async function snapshotAllFrames(tabId,interactionPolicy=DEFAULT_INTERACTION_POLICY) {
+async function snapshotAllFrames(tabId,interactionPolicy=DEFAULT_INTERACTION_POLICY,editorOwner) {
   const frameIds = await listFrameIds(tabId);
   const elements = [];
   const texts = [];
@@ -129,10 +138,11 @@ async function snapshotAllFrames(tabId,interactionPolicy=DEFAULT_INTERACTION_POL
     }
     if(snap.observationCoverage) observationCoverage.push({frameId,...snap.observationCoverage});
     respondedFrames += 1;
-    framePages.push({frameId,...snap.page});
+    const page={...snap.page,observation:frameObservation(snap.page?.observation,frameId)};
+    framePages.push({frameId,...page});
     if (frameId === 0) {
       topDiagnostics = snap.diagnostics || null;
-      if (snap.page) pageInfo = snap.page;
+      if (snap.page) pageInfo = page;
     }
     if (snap.elements.length) framesWithElements += 1;
     if (snap.filters) {
@@ -143,6 +153,8 @@ async function snapshotAllFrames(tabId,interactionPolicy=DEFAULT_INTERACTION_POL
     for (const el of snap.elements) {
       const merged = { ...el, frameId, index: `f${frameId}_${el.index}`,
         ...(el.surfaceId ? {surfaceId:`f${frameId}:${el.surfaceId}`} : {}),
+        ...(el.regionId ? {regionId:`f${frameId}:${el.regionId}`} : {}),
+        ...(el.parentNodeId ? {parentNodeId:`f${frameId}:${el.parentNodeId}`} : {}),
         stableKey:`f${frameId}:${el.stableKey || `${snap.page?.documentId || 'observed'}:${el.index}`}`,
         ...(el.popupOwnerKey ? {popupOwnerKey:`f${frameId}:${el.popupOwnerKey}`} : {}),
         ...(el.recordStableKey ? {recordStableKey:`f${frameId}:${el.recordStableKey}`} : {})};
@@ -162,6 +174,12 @@ async function snapshotAllFrames(tabId,interactionPolicy=DEFAULT_INTERACTION_POL
     editorSurface:!!pageInfo.editorSurface || editorFrames.length>0};
   for (const el of elements) {
     if (editorFrames.includes(el.frameId) && pageInfo.activeSection) el.section=pageInfo.activeSection;
+    const ownedEditor=editorOwner && el.context!=='popup' &&
+      (editorFrames.includes(el.frameId) || pageInfo.editorSurfaceId && el.surfaceId===pageInfo.editorSurfaceId ||
+        editorOwner.documentId && pageInfo.documentId && editorOwner.documentId!==pageInfo.documentId);
+    if(ownedEditor) {
+      el.section=editorOwner.title;el.regionId=editorOwner.id;el.regionEvidence='entry-transition';
+    }
   }
   if (!elements.some(el=>el.section && el.context!=='popup')) {
     pageInfo={...pageInfo,activeSection:'当前表单'};
@@ -258,9 +276,9 @@ function describeEmpty(snap) {
   return bits.join(' / ');
 }
 
-async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, isCurrentRun = () => true,
-  initialRecordIndex = 0, scopeSection, dataBlock, fieldBindings = [], recordBindings = {}, recordEditor = false,
-  runMemory, recordKey,interactionPolicy=DEFAULT_INTERACTION_POLICY }) {
+async function runRecordTransaction({ goal, resume, apiKey, apiProvider='typesafe', tabId, onProgress, isCurrentRun = () => true,
+  initialRecordIndex = 0, scopeSection,scopeRegionId,scopeDocumentId, dataBlock, fieldBindings = [], recordBindings = {}, recordEditor = false,
+  runMemory, recordKey,interactionPolicy=DEFAULT_INTERACTION_POLICY,recordControlKeys,recordSurfaceKey,gateScope=false,fieldScope=false,deferRecordCommit=false,summaryScope=false,parentPageRoute }) {
   const history = [...(runMemory.historyByRecord.get(recordKey) || []),...fieldBindings.map(binding=>({...binding,kind:'bind'}))];
   if (recordKey) runMemory.historyByRecord.set(recordKey, history);
   let step = 0;
@@ -287,8 +305,10 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
   };
   const recordIndex = initialRecordIndex;
   const recordSection = scopeSection;
+  const transactionRoutes=new Set(parentPageRoute ? [parentPageRoute] : []);
+  let transactionRouteInitialized=false;
 
-  while (step < MAX_STEPS) {
+  while (step < (interactionPolicy===OBSERVED_POLICY ? 240 : MAX_STEPS)) {
     if (!isCurrentRun()) {
       return { ok: false, cancelled: true, reason: "已由新的填写任务替换", step, history };
     }
@@ -296,7 +316,22 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     onProgress({ step, phase: "snapshot" });
 
     // 1. 取快照（汇总所有 frame）
-    const snap = await snapshotAllFrames(tabId,interactionPolicy);
+    const snap = await snapshotAllFrames(tabId,interactionPolicy,scopeRegionId ?
+      {id:scopeRegionId,title:scopeSection,documentId:scopeDocumentId} : undefined);
+    const route=pageRouteKey(snap.page);
+    if(!transactionRouteInitialized) {if(route) transactionRoutes.add(route);transactionRouteInitialized=true;}
+    const outside=pageBoundaryReason(snap.page,transactionRoutes);
+    if(outside) return {ok:false,terminal:true,reason:outside,step,history,pendingIssues};
+    if(interactionPolicy===OBSERVED_POLICY) {
+      const notice=snap.elements.find(control=>control.noticeDismissal && actionPermission(control).allowed);
+      if(notice) {
+        const {frameId,local}=parseFrameTarget(notice.index);
+        const result=await executePageClick(tabId,frameId,local,false);
+        if(!result?.ok) return {ok:false,terminal:true,reason:'提示层关闭失败',step,history,pendingIssues};
+        onProgress({step,phase:'notice',action:'关闭遮挡表单的非协议提示，随后重新观察当前字段'});
+        await sleep(250);continue;
+      }
+    }
     if(pendingDateDependencies.length) {
       history.push(...observeDateDefaults(pendingDateDependencies,snap.elements));
       pendingDateDependencies=[];
@@ -308,13 +343,21 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
       ]};
     }
     if (scopeSection) {
+      if(interactionPolicy===OBSERVED_POLICY && recordControlKeys && !gateScope && !fieldScope) {
+        const surfaces=recordSurfaces(snap.elements.filter(c=>belongsToRegion(c,{id:scopeRegionId,title:scopeSection})),{regionId:scopeRegionId});
+        const surface=surfaces.find(s=>s.key===recordSurfaceKey || s.controls.some(c=>recordControlKeys.includes(c.stableKey || c.index))) ||
+          (surfaces.length===1 ? surfaces[0] : null);
+        if(surface) recordControlKeys=surface.controls.map(c=>c.stableKey || c.index);
+      }
       const owner = [...history].reverse().find(item => item.kind !== 'cancel' && item.controlStableKey &&
         ['click','inspect','type_text','select'].includes(item.kind));
-      snap.elements = scopeControls(snap.elements,{section:scopeSection,
-        ownerKey:owner?.controlStableKey,editorFrames:snap.page.editorFrames,editorSurfaceId:snap.page.editorSurfaceId});
+      snap.elements = scopeControls(snap.elements,{section:scopeSection,regionId:scopeRegionId,
+        ownerKey:owner?.controlStableKey,strictPopupOwner:interactionPolicy===OBSERVED_POLICY,
+        editorFrames:snap.page.editorFrames,editorSurfaceId:snap.page.editorSurfaceId});
       snap.count = snap.elements.length;
-      snap.page = {...snap.page, title:scopeSection, sectionScope:true, dataBlock,
-        recordIndex,recordScope:true,recordEditor,recordBindings,scopedSection:true, ignoreUnmapped:true};
+      snap.page = {...snap.page, title:scopeSection,regionId:scopeRegionId,sectionScope:true, dataBlock,
+        recordIndex,recordScope:true,recordEditor,recordBindings,scopedSection:true, ignoreUnmapped:true,
+        recordControlKeys,gateScope,fieldScope,deferRecordCommit,summaryScope,agreementConfirmed:agreementConfirmedForRun};
     }
     const previous = history[history.length - 1];
     if (scopeSection && previous?.kind === 'click' && previous.recordCommit && !previous.commitSettled) {
@@ -380,6 +423,14 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
         value:action.value,resolvedValue:action.resolvedValue}))});
     if (actionPlan.actions.length && actionPlan.pickerField) pendingSearchReads.delete(actionPlan.pickerField);
     if (actionPlan.actions.length === 0) {
+      if(interactionPolicy===OBSERVED_POLICY) {
+        const controls=snap.elements.filter(c=>c.context!=='popup' && (!recordControlKeys || recordControlKeys.includes(c.stableKey || c.index)));
+        const audit=fieldAudit(controls,history,actionPlan,{resume,url:snap.page.url});
+        const issues=audit.filter(item=>['missing-data','blocked','uninspected'].includes(item.status))
+          .map(item=>({field:item.label,reason:item.reason,status:item.status}));
+        if(!actionPlan.observation.coverage_complete) issues.push({field:scopeSection,reason:'观察范围尚不完整',status:'uninspected'});
+        return {ok:issues.length===0,done:true,step,history,pendingIssues:issues};
+      }
       const last = history[history.length - 1];
       if (actionPlan.pickerField && last?.context === 'popup') {
         const reads = pendingSearchReads.get(actionPlan.pickerField) || 0;
@@ -445,6 +496,7 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     try {
       decision = await choose({
         apiKey,
+        apiProvider,
         goal,
         page: snap.page,
         elements: snap.elements,
@@ -453,8 +505,9 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
         actionPlan
       });
     } catch (err) {
-      onProgress({step,phase:'failed',action:`Jev 决策失败：${err.message}`});
-      return { ok: false, reason: `Jev 调用失败: ${err.message}`, step, history };
+      onProgress({step,phase:'failed',action:`Jev 决策失败：${err.message}`,
+        ...(err.decisionTrace ? {decisionTrace:err.decisionTrace} : {})});
+      return { ok: false, terminal:true,decisionUnavailable:true,reason: `Jev 决策服务不可用: ${err.message}`, step, history };
     }
     if (!isCurrentRun()) {
       return { ok: false, cancelled: true, reason: "已由新的填写任务替换", step, history };
@@ -470,6 +523,9 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
       candidates,
       topActions: topProbabilities(decision.actionProbabilities, 3),
       counted: snap.count
+      ,...(decision.request && (decision.confidence<0.75 || decision.operation==='RETURN_SECTION') ?
+        {decisionTrace:{request:decision.request,requestMetrics:decision.requestMetrics,selected:decision.id,confidence:decision.confidence,
+          ...(decision.verificationTrace ? {verification:decision.verificationTrace} : {})}} : {})
     });
 
     const { operation, target, resumeField } = decision;
@@ -478,23 +534,32 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
         initialValue:snap.elements.find(control=>control.index===target)?.value || '',page_changed:false});
       continue;
     }
+    if(operation==='OBSERVE_OPTIONS' && decision.observed) {
+      history.push({kind:'option-window',controlStableKey:decision.controlStableKey,
+        optionSignature:decision.optionSignature,optionOffset:decision.optionOffset,page_changed:false});
+      continue;
+    }
     if(operation==='WAIT' && decision.observed) {
       history.push({kind:'wait',controlStableKey:decision.controlStableKey,resumeField,label:decision.label,page_changed:false});
       await sleep(WAIT_MS_SUGGEST);
       continue;
     }
+    if(decision.optionVerification) onProgress({step,phase:'option-verification',
+      action:`选项语义核验：可推进 ${Math.round(decision.optionVerification.progress*100)}%，最终等价 ${Math.round(decision.optionVerification.equivalent*100)}%；${verifiedOption(decision.optionVerification) ? '通过，执行后继续回读' : '未达核验门槛，保留待核对'}`});
     if(decision.observed && decision.context==='popup' && ['CLICK','SELECT'].includes(operation) &&
-      decision.confidence<0.75) {
+      decision.confidence<0.75 && !decision.calendarStep && !verifiedOption(decision.optionVerification)) {
       if(await deferField(decision,'选项语义置信不足，保留待核对')) continue;
     }
     if (operation === 'BIND_FIELD' || operation === 'SKIP_FIELD') {
+      if(decision.sourceVerification) onProgress({step,phase:'source-verification',
+        action:`字段来源语义核验：${Math.round(decision.sourceVerification.probability*100)}%；${verifiedSource(decision.sourceVerification) ? '通过，执行后回读已有事实' : '未达核验门槛，保留待核对'}`});
       const key=decision.controlStableKey || target;
       const bindingControl=snap.elements.find(el=>(el.stableKey || el.index)===key);
       const observed=history.some(item=>item.kind==='inspect' && item.controlStableKey===key);
       const bindingThreshold=fieldBindingThreshold(decision);
       const genericSelectorLabel=/^(?:请选择|请填写|点击选择|选择|搜索|下拉|选项|未命名|无标签)(?:\s|$)/
         .test(String(decision.label || bindingControl?.label || '').trim());
-      if (decision.confidence<bindingThreshold && !observed &&
+      if (decision.confidence<bindingThreshold && !verifiedSource(decision.sourceVerification) && !observed &&
           (operation==='BIND_FIELD' || genericSelectorLabel) &&
           bindingControl?.kind==='custom-select' && bindingControl.operations?.includes('CLICK') &&
           !snap.elements.some(el=>el.context==='popup')) {
@@ -508,9 +573,10 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
           continue;
         }
       }
-      if (operation === 'BIND_FIELD' && decision.confidence >= bindingThreshold) {
+      if (operation === 'BIND_FIELD' && (decision.confidence >= bindingThreshold || verifiedSource(decision.sourceVerification))) {
         history.push({kind:'bind',resumeField,controlStableKey:decision.controlStableKey,
           label:decision.label,fieldLabel:decision.fieldLabel,recordIndex:decision.recordIndex,
+          ...(decision.sourceValueOverride!=null ? {sourceValueOverride:decision.sourceValueOverride} : {}),
           page_changed:false});
         onProgress({step,phase:'bound',action:`${decision.label} 已绑定 ${resumeField}，重新观察后执行`});
       } else {
@@ -535,10 +601,11 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
       const {frameId,local}=parseFrameTarget(operation==='RETURN' ? decision.sourceTarget || history.at(-1)?.sourceTarget || target : target);
       const returned=operation==='RETURN' ? await closePageTransactions(tabId,frameId) :
         await sendToFrame(tabId,frameId,{type:'EXECUTE',action:'click',index:local});
-      if (returned?.ok) {
+      {
         pendingIssues.push({field:decision.fieldLabel || resumeField,reason:decision.reason});
         history.push({kind:'cancel',cancelField:resumeField,skipControlKey:decision.skipControlKey,
-          reason:decision.reason,reasonKind:decision.reasonKind,action:'RETURN',page_changed:true});
+          reason:returned?.ok ? decision.reason : `${decision.reason}；弹层关闭未验收`,
+          reasonKind:decision.reasonKind,action:'RETURN',page_changed:returned?.ok===true});
         await sleep(WAIT_MS_OVERLAY);
         continue;
       }
@@ -594,7 +661,8 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
       if (await deferField(decision,'字段事务达到本轮操作预算，保留待处理')) continue;
       return {ok:false,reason:'当前字段事务达到操作预算',step,history,pendingIssues};
     }
-    const attemptKey = [fieldKey,operation,targetEntry?.kind,targetEntry?.label,decision.pickerStep,popupState].join("|");
+    const attemptKey = decision.observed ? interactionAttemptKey(decision,snap.elements) :
+      [fieldKey,operation,targetEntry?.kind,targetEntry?.label,decision.pickerStep,popupState].join("|");
     const attemptCount = (attempts.get(attemptKey) || 0) + 1;
     attempts.set(attemptKey, attemptCount);
     if (attemptCount > 3) {
@@ -607,7 +675,7 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     let execMsg;
     let actionLabel;
     if (operation === "CLICK") {
-      execMsg = { type: "EXECUTE", action: "click", index: local };
+      execMsg = { type: "EXECUTE", action: "click", index: local, optionIntent:decision.optionIntent };
       actionLabel = `click[${target}]${decision.context === 'popup' ? `(${decision.label || '未命名选项'})` : ''}`;
     } else if (operation === "TYPE_TEXT") {
       const value = decision.resolvedValue ?? getResumeValue(resume, resumeField);
@@ -638,6 +706,9 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
     } else if (operation === "SELECT") {
       execMsg = { type: "EXECUTE", action: "select", target: local };
       actionLabel = `select[${target}]`;
+    } else if(operation==='SUBMIT_SEARCH') {
+      execMsg={type:'EXECUTE',action:'submit_search',index:local};
+      actionLabel=`submit_search[${target}]`;
     } else if(operation==='SCROLL') {
       execMsg={type:'EXECUTE',action:'scroll',index:local,direction:decision.direction};
       actionLabel=`scroll[${target}]${decision.direction}`;
@@ -670,13 +741,21 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
         resumeField,formRule:decision.formRule,controlKind:targetEntry?.kind,
         controlStableKey:decision.controlStableKey || targetEntry?.stableKey,
         label:decision.label,context:decision.context,
-        text: (execRes && execRes.reason) || "exec failed",
+        text: (execRes && execRes.reason) || "exec failed",attemptKey,
         page_changed: false
       });
       if (operation === 'UPLOAD_FILE') {
-        pendingIssues.push({field:decision.fieldLabel || decision.label || '上传文件',
-          reason:execRes?.reason || '网站未确认文件上传'});
-        return {ok:false,terminal:true,reason:execRes?.reason || '网站未确认文件上传',step,history,pendingIssues};
+        if(await deferField(decision,execRes?.reason || '网站回执尚待确认')) continue;
+      }
+      if(operation==='TYPE_TEXT' && execRes?.verified!==true && decision.observed) {
+        const initial=[...history].reverse().find(item=>item.kind==='focus' &&
+          item.controlStableKey===(decision.controlStableKey || targetEntry?.stableKey));
+        const restore=initial && hasCommittedValue({...targetEntry,value:initial.initialValue}) ? initial.initialValue : '';
+        const rollback=await executeField({tabId,frameId,local,decision,targetEntry,page:snap.page,
+          execMsg:{type:'EXECUTE',action:'type_text',index:local,value:restore}});
+        onProgress({step,phase:'rollback',action:rollback?.ok ?
+          `${decision.label} 回读失败，已恢复本次操作前的内容` : `${decision.label} 回退尚未验收，保留具体失败证据`});
+        if(await deferField(decision,execRes?.reason || '网站未接受来源值')) continue;
       }
       // 日期执行器已经完成有界导航；将失败记入账本并关闭弹层，继续当前记录。
       if (operation === 'PICK_DATE' && await deferField(decision,execRes?.reason || '日期未被网站接受')) continue;
@@ -702,7 +781,7 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
       if (decision.context === 'popup') waitMs = WAIT_MS_OVERLAY;
       if (decision.context === "popup" && /^(确定|确认|完成)$/.test(decision.label || "")) waitMs = WAIT_MS_OVERLAY;
       const kind = clickedEl && clickedEl.kind;
-      if (kind === "custom-select" || kind === "combobox" || kind === "date") {
+      if (kind === "custom-select" || kind === "combobox" || kind === "date" || kind==='observed-field') {
         waitMs = WAIT_MS_OVERLAY;
       }
       // 分区导航按钮：等下一段字段渲染出来，并锁定当前分区名用于日志
@@ -740,18 +819,26 @@ async function runRecordTransaction({ goal, resume, apiKey, tabId, onProgress, i
       recordCommit:decision.recordCommit === true,
       resolvedValue: decision.resolvedValue || null,
       value: decision.value || null
+      ,attemptKey
       ,controlKind: clickedEl?.kind || null
       ,controlStableKey: decision.controlStableKey || clickedEl?.stableKey || null
       ,verified: execRes.verified === true
       ,pickerStep: decision.pickerStep,
       selectedLabel:decision.observed && decision.context==='popup' ? decision.label : undefined,
       semanticChoiceConfidence:decision.observed ? decision.confidence : undefined,
+      semanticEquivalentProbability:decision.optionVerification?.equivalent,
+      selectionEvidence:decision.selectionCommit ? decision.selectionEvidence : undefined,
       pickerLeaf: decision.pickerLeaf
     });
+    if(decision.inspectField) history.push({kind:'inspect',controlStableKey:decision.controlStableKey,
+      label:decision.label,page_changed:pageChanged});
     consecutiveSkips = 0;
 
     // 连着几步都"操作了但页面纹丝不动"→ 大概是点了个不动的控件，别再空转 120 步
-    const recent = history.slice(-MAX_NO_CHANGE);
+    const recent = history.filter(item=>['click','type_text','select','pick_date','upload_file','scroll'].includes(item.kind) &&
+      (interactionPolicy!==OBSERVED_POLICY || item.controlStableKey===decision.controlStableKey &&
+        item.resumeField===resumeField))
+      .slice(-MAX_NO_CHANGE);
     if (
       recent.length === MAX_NO_CHANGE &&
       recent.every((h) => h.page_changed === false && !["wait", "skip", "done", "failed"].includes(h.kind))
@@ -792,7 +879,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       const snap = await snapshotAllFrames(tab.id);
       const resume = msg.resume ? prepareResume(msg.resume) : null;
-      const sectionPlan = resume ? buildSectionPlan(snap.elements, resume, {}, snap.page) : null;
+      const policy=resolveInteractionPolicy(msg.interactionPolicy);
+      const sectionPlan = resume ? policy===OBSERVED_POLICY ? regionPlan(createGoalLedger(),snap) :
+        buildSectionPlan(snap.elements, resume, {}, snap.page) : null;
       const todo = resume ? buildTodoList(snap.elements, resume, {}, snap.page) : null;
       const pageState = classifyPageState(snap.page, snap.elements);
       sendResponse({
@@ -821,6 +910,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ok:true,version:CONTENT_SCRIPT_VERSION,protocolVersion:SNAPSHOT_PROTOCOL_VERSION});
     return true;
   }
+  if(msg?.type==='TEST_JEV_CONNECTION') {
+    testJevConnection({apiKey:msg.apiKey,apiProvider:msg.apiProvider})
+      .then(sendResponse).catch(error=>sendResponse({ok:false,reason:error.message}));
+    return true;
+  }
   if (msg && msg.type === "START_FILL") {
     if (msg.runtimeVersion !== CONTENT_SCRIPT_VERSION) {
       sendResponse({ok:false,started:false,reason:'插件版本未同步，请在扩展管理页重载插件后再次开始'});
@@ -828,7 +922,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     eventPersistence=eventPersistence.then(() => {
       fillEvents=[];
-      return chrome.storage.session.set({fillEvents:[]});
+      decisionTraces=[];
+      return chrome.storage.session.set({fillEvents:[],decisionTraces:[]});
     }).catch(() => {});
     (async () => {
       try {
@@ -852,7 +947,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // section 动作中选择；选中后才把该 section 的控件交给记录事务。这样不同 section
 // 的重复字段（例如多个“年”“学校名称”）永远不会出现在同一次字段决策里。
-async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun,interactionPolicy=DEFAULT_INTERACTION_POLICY}) {
+async function runSectionScheduler({tabId,resume,apiKey,apiProvider='typesafe',goal,report,isCurrentRun,interactionPolicy=DEFAULT_INTERACTION_POLICY}) {
   const ledger = {};
   const runMemory = createRunMemory();
   const sections = [];
@@ -952,7 +1047,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       ledger[sectionKey]={...state,deferred:true};
       return null;
     }
-    const choice=await choose({apiKey,
+    const choice=await choose({apiKey,apiProvider,
       goal:`${goal}\nSelect the JSON block corresponding to this section and its visible fields. Work on one block at a time.`,
       page:{...routingPage,title:section,sectionScope:true},elements:controls,history:[],resume,
       actionPlan:blockPlan});
@@ -994,7 +1089,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
       const controls=scopeControls(snap.elements,{section:focusSection});
       const bindingPlan=buildRecordBindingPlan(controls,resume,dataBlock,confirmed);
       if (bindingPlan) {
-        const choice=await choose({apiKey,goal:'Match this existing page record to one source record using its name, dates, role and description. Preserve ambiguous records.',
+        const choice=await choose({apiKey,apiProvider,goal:'Match this existing page record to one source record using its name, dates, role and description. Preserve ambiguous records.',
           page:{...snap.page,title:focusSection,dataBlock,sectionScope:true},
           elements:bindingPlan.observed,history:[],resume,actionPlan:bindingPlan});
         if (snap.fingerprint && (await pageFingerprint(tabId)) !== snap.fingerprint) continue;
@@ -1042,7 +1137,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
     if (!meaningful.length) return finish('已检查可识别分区');
     let decision;
     try {
-      decision = await choose({apiKey, goal: `${goal}\nChoose the next section-level action. Select one section to work on, add a required record, or exit. Do not select final submission.`,
+      decision = await choose({apiKey,apiProvider, goal: `${goal}\nChoose the next section-level action. Select one section to work on, add a required record, or exit. Do not select final submission.`,
         page:snap.page,elements:snap.elements,history:[],resume,actionPlan:plan});
     } catch (err) {
       return {ok:false,reason:`Jev 分区决策失败: ${err.message}`,sections,pendingIssues};
@@ -1188,7 +1283,7 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
           } else if (addition.mode === 'editor' || addition.mode === 'route') {
             const sectionKey=`${decision.section}|*`;
             ledger[sectionKey]={...ledger[sectionKey],editorPending:true,editorRecordIndex:decision.recordIndex || 0,
-              recordMode:addition.mode};
+              recordMode:addition.mode,parentPageRoute:pageRouteKey(snap.page)};
             report({step:turn,phase:'section',action:`「${decision.section}」${addition.reason}，开始填写第 ${Number(decision.recordIndex || 0)+1} 条`});
           } else {
             const sectionKey=`${decision.section}|*`;
@@ -1215,9 +1310,9 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
     const anchorCount = countRenderedRecords(decision.section, scopedControls,activeBlock);
     const key = recordLedgerKey(decision.section,activeBlock,resume,decision.recordIndex || 0);
     report({step:turn,phase:'section',action:`专注填写「${decision.section}」；已隔离 ${scopedControls.length} 个控件`});
-    const result = await runRecordTransaction({goal,resume,apiKey,tabId,onProgress:report,isCurrentRun,scopeSection:decision.section,
+    const result = await runRecordTransaction({goal,resume,apiKey,apiProvider,tabId,onProgress:report,isCurrentRun,scopeSection:decision.section,
       dataBlock:activeBlock,fieldBindings,recordBindings,recordEditor,initialRecordIndex:decision.recordIndex ?? 0,
-      runMemory,recordKey:key,interactionPolicy});
+      runMemory,recordKey:key,interactionPolicy,parentPageRoute:ledger[`${decision.section}|*`]?.parentPageRoute});
     if (result.cancelled) return {ok:false,cancelled:true,reason:'已停止填写',sections,pendingIssues};
     const sectionKey=`${decision.section}|*`;
     const sectionState=ledger[sectionKey] || {};
@@ -1328,13 +1423,14 @@ async function runSectionScheduler({tabId,resume,apiKey,goal,report,isCurrentRun
 }
 
 async function runFill(msg) {
-  const { resume:sourceResume, apiKey } = msg;
+  const { resume:sourceResume, apiKey, apiProvider='typesafe' } = msg;
+  const connection=jevProvider(apiProvider);
   const interactionPolicy=resolveInteractionPolicy(msg.interactionPolicy);
   agreementConfirmedForRun = msg.agreementConfirmed === true;
   const goal = DEFAULT_GOAL;
   const resume = prepareResume(sourceResume);
   if (!apiKey) {
-    pushToPopup({ type: "FILL_DONE", ok: false, reason: "未填写 TypeSafe API Key" });
+    pushToPopup({ type: "FILL_DONE", ok: false, reason: `未填写 ${connection.label} API Key` });
     return;
   }
   if (!resume) {
@@ -1383,6 +1479,7 @@ async function runFill(msg) {
     runtimeVersion: CONTENT_SCRIPT_VERSION,
     protocolVersion: SNAPSHOT_PROTOCOL_VERSION,
     interactionPolicy,
+    apiProvider,model:connection.model,
     action: `已接管页面「${tab.title || '无标题'}」${tab.url ? ' ' + tab.url : ''}，开始读取控件`
   });
 
@@ -1394,7 +1491,10 @@ async function runFill(msg) {
     ]});
     return;
   }
-  const result=await runSectionScheduler({tabId:tab.id,resume,apiKey,goal,report,isCurrentRun,interactionPolicy});
+  const result=interactionPolicy===OBSERVED_POLICY ? await runGoalScheduler({tabId:tab.id,resume,apiKey,apiProvider,goal,report,isCurrentRun,
+    snapshot:snapshotAllFrames,executeClick:executePageClick,closeTransactions:closePageTransactions,
+    transaction:runRecordTransaction,sleep,agreementConfirmed:agreementConfirmedForRun}) :
+    await runSectionScheduler({tabId:tab.id,resume,apiKey,apiProvider,goal,report,isCurrentRun,interactionPolicy});
 
   if (isCurrentRun()) pushToPopup({ type: "FILL_DONE", ...result });
 }

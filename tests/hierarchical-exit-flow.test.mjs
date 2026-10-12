@@ -29,7 +29,7 @@ globalThis.fetch=async(_url,args)=>{
 globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{addListener(){}},onInstalled:{addListener(){}},
   sendMessage:msg=>{if(msg.type==='FILL_DONE') resolveDone(msg);},lastError:null},
   tabs:{query:async()=>[{id:1,title:'简历',url:'https://example.test/exits'}],sendMessage(_id,msg,_opts,reply){
-    if(['PING','CLOSE_TRANSACTIONS'].includes(msg.type)) return reply({ok:true,version:'2026-10-08.59'});
+    if(['PING','CLOSE_TRANSACTIONS'].includes(msg.type)) return reply({ok:true,version:'2026-10-11.4'});
     if(msg.type==='FINGERPRINT') return reply({ok:true,fingerprint:String(revision)});
     if(msg.type==='SNAPSHOT_FULL') return reply({ok:true,fingerprint:String(revision),
       page:{title:'简历',url:'https://example.test/exits',text:'返回测试 置信测试 联系资料'},elements:[
@@ -47,7 +47,7 @@ globalThis.chrome={runtime:{onMessage:{addListener:fn=>listener=fn},onConnect:{a
   }},scripting:{executeScript:async()=>[{frameId:0}]},storage:{session:{set:async()=>{}}}};
 try {
   await import('../background/service-worker.js');
-  listener({type:'START_FILL',runtimeVersion:'2026-10-08.59',interactionPolicy:'adapted',apiKey:'synthetic',resume:{basics:{name:'示例姓名',phone:'12345678900'},projects:[{name:'合成项目',startDate:'2026-09'}]}},{},()=>{});
+  listener({type:'START_FILL',runtimeVersion:'2026-10-11.4',interactionPolicy:'adapted',apiKey:'synthetic',resume:{basics:{name:'示例姓名',phone:'12345678900'},projects:[{name:'合成项目',startDate:'2026-09'}]}},{},()=>{});
   const result=await completion;
   assert.equal(phone,'12345678900','离开局部失败后继续其他分区');
   assert.equal(result.done,true);
